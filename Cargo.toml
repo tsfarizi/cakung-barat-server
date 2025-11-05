@@ -1,0 +1,23 @@
+[package]
+name = "cakung-barat-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = "4"
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["serde", "v4"] }
+tokio = { version = "1.0", features = ["full"] }
+utoipa = { version = "^4" }
+utoipa-swagger-ui = { version = "^4", features = ["actix-web"] }
+parking_lot = "0.12"
+serde_json = "1.0"
+diesel = { version = "2.1.0", features = ["sqlite", "r2d2"] }
+dotenvy = "0.15"
+log = "0.4"
+env_logger = "0.10"
+actix-multipart = "0.6"
+sanitize-filename = "0.5.0"
+futures-util = "0.3"
+
