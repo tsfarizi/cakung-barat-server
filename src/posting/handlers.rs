@@ -1,4 +1,5 @@
 use actix_web::{web::{self, Path}, HttpResponse, Responder};
+use log::{info, error, debug};
 use crate::schema::{NaiveDate, Uuid};
 
 use crate::{db::SharedAppState, posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest}};
@@ -13,8 +14,10 @@ use crate::{db::SharedAppState, posting::models::{CreatePostingRequest, Posting,
     )
 )]
 pub async fn get_all_postings(data: web::Data<SharedAppState>) -> impl Responder {
+    info!("Request to get all postings");
     let postings = data.postings.read();
     let all_postings: Vec<Posting> = postings.values().cloned().collect();
+    debug!("Found {} postings", all_postings.len());
     HttpResponse::Ok().json(all_postings)
 }
 
@@ -35,10 +38,14 @@ pub async fn get_posting_by_id(
     id: Path<Uuid>,
     data: web::Data<SharedAppState>,
 ) -> impl Responder {
+    let posting_id = id.into_inner();
+    info!("Request to get posting by id: {:?}", posting_id);
     let postings = data.postings.read();
-    if let Some(posting) = postings.get(&id.into_inner()) {
+    if let Some(posting) = postings.get(&posting_id) {
+        debug!("Posting found: {:?}", posting_id);
         HttpResponse::Ok().json(posting)
     } else {
+        error!("Posting not found: {:?}", posting_id);
         HttpResponse::NotFound().body("Posting not found")
     }
 }
@@ -58,6 +65,7 @@ pub async fn create_posting(
     req: web::Json<CreatePostingRequest>,
     data: web::Data<SharedAppState>,
 ) -> impl Responder {
+    info!("Attempting to create a new posting");
     let mut postings = data.postings.write();
     let new_id = ::uuid::Uuid::new_v4();
     let current_date = ::chrono::Utc::now().date_naive();
@@ -79,6 +87,7 @@ pub async fn create_posting(
     };
 
     postings.insert(Uuid(new_id), new_posting.clone());
+    info!("New posting created with id: {}", new_id);
     HttpResponse::Created().json(new_posting)
 }
 
@@ -102,17 +111,21 @@ pub async fn update_posting(
     req: web::Json<UpdatePostingRequest>,
     data: web::Data<SharedAppState>,
 ) -> impl Responder {
-    let mut postings = data.postings.write();
     let posting_id = id.into_inner();
+    info!("Attempting to update posting with id: {:?}", posting_id);
+    let mut postings = data.postings.write();
 
     if let Some(posting) = postings.get_mut(&posting_id) {
         if let Some(judul) = &req.judul {
+            debug!("Updating posting title for id: {:?}", posting_id);
             posting.judul = judul.clone();
         }
         if let Some(detail) = &req.detail {
+            debug!("Updating posting detail for id: {:?}", posting_id);
             posting.detail = detail.clone();
         }
         if let Some(assets) = &req.assets {
+            debug!("Updating posting assets for id: {:?}", posting_id);
             posting.assets = assets.clone().into_iter().map(|mut asset| {
                 if asset.id.0.is_nil() {
                     asset.id = Uuid(::uuid::Uuid::new_v4());
@@ -121,8 +134,10 @@ pub async fn update_posting(
                 asset
             }).collect();
         }
+        info!("Posting with id: {:?} updated successfully", posting_id);
         HttpResponse::Ok().json(posting.clone())
     } else {
+        error!("Posting not found for update: {:?}", posting_id);
         HttpResponse::NotFound().body("Posting not found")
     }
 }
@@ -144,10 +159,14 @@ pub async fn delete_posting(
     id: Path<Uuid>,
     data: web::Data<SharedAppState>,
 ) -> impl Responder {
+    let posting_id = id.into_inner();
+    info!("Attempting to delete posting with id: {:?}", posting_id);
     let mut postings = data.postings.write();
-    if postings.remove(&id.into_inner()).is_some() {
+    if postings.remove(&posting_id).is_some() {
+        info!("Posting with id: {:?} deleted successfully", posting_id);
         HttpResponse::NoContent().finish()
     } else {
+        error!("Posting not found for deletion: {:?}", posting_id);
         HttpResponse::NotFound().body("Posting not found")
     }
 }
