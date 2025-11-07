@@ -1,10 +1,11 @@
-use actix_web::{web::{self, Path}, HttpResponse, Responder,};
-use chrono::Utc;
-use uuid::Uuid;
+use actix_web::{web::{self, Path}, HttpResponse, Responder};
+use crate::schema::{NaiveDate, Uuid};
 
-use crate::{db::SharedAppState, models::{CreatePostingRequest, Posting, UpdatePostingRequest},};
+use crate::{db::SharedAppState, posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest}};
 
 #[utoipa::path(
+    context_path = "/api",
+    tag = "Posting Service",
     get,
     path = "/postings",
     responses(
@@ -18,6 +19,8 @@ pub async fn get_all_postings(data: web::Data<SharedAppState>) -> impl Responder
 }
 
 #[utoipa::path(
+    context_path = "/api",
+    tag = "Posting Service",
     get,
     path = "/postings/{id}",
     responses(
@@ -41,6 +44,8 @@ pub async fn get_posting_by_id(
 }
 
 #[utoipa::path(
+    context_path = "/api",
+    tag = "Posting Service",
     post,
     path = "/postings",
     request_body = CreatePostingRequest,
@@ -54,29 +59,32 @@ pub async fn create_posting(
     data: web::Data<SharedAppState>,
 ) -> impl Responder {
     let mut postings = data.postings.write();
-    let new_id = Uuid::new_v4();
-    let current_date = Utc::now().date_naive();
+    let new_id = ::uuid::Uuid::new_v4();
+    let current_date = ::chrono::Utc::now().date_naive();
 
     let assets = req.assets.clone().unwrap_or_default().into_iter().map(|mut asset| {
-        if asset.id.is_nil() {
-            asset.id = Uuid::new_v4();
+        if asset.id.0.is_nil() {
+            asset.id = Uuid(::uuid::Uuid::new_v4());
         }
+        asset.url = format!("/assets/{}", asset.id.0);
         asset
     }).collect();
 
     let new_posting = Posting {
-        id: new_id,
+        id: Uuid(new_id),
         judul: req.judul.clone(),
-        tanggal: current_date,
+        tanggal: NaiveDate(current_date),
         detail: req.detail.clone(),
         assets,
     };
 
-    postings.insert(new_id, new_posting.clone());
+    postings.insert(Uuid(new_id), new_posting.clone());
     HttpResponse::Created().json(new_posting)
 }
 
 #[utoipa::path(
+    context_path = "/api",
+    tag = "Posting Service",
     put,
     path = "/postings/{id}",
     request_body = UpdatePostingRequest,
@@ -106,9 +114,10 @@ pub async fn update_posting(
         }
         if let Some(assets) = &req.assets {
             posting.assets = assets.clone().into_iter().map(|mut asset| {
-                if asset.id.is_nil() {
-                    asset.id = Uuid::new_v4();
+                if asset.id.0.is_nil() {
+                    asset.id = Uuid(::uuid::Uuid::new_v4());
                 }
+                asset.url = format!("/assets/{}", asset.id.0);
                 asset
             }).collect();
         }
@@ -119,6 +128,8 @@ pub async fn update_posting(
 }
 
 #[utoipa::path(
+    context_path = "/api",
+    tag = "Posting Service",
     delete,
     path = "/postings/{id}",
     responses(

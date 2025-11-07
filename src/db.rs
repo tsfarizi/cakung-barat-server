@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
-use uuid::Uuid;
-use crate::models::{Posting};
+use crate::schema::Uuid;
+use crate::posting::models::{Posting};
 
 pub struct AppState {
     pub postings: RwLock<HashMap<Uuid, Posting>>,
