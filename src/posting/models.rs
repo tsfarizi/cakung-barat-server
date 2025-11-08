@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use crate::schema::{NaiveDate, Uuid};
-use crate::asset::models::Asset;
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct Posting {
@@ -13,7 +12,7 @@ pub struct Posting {
     pub tanggal: NaiveDate,
     #[schema(example = "## Detail Posting\n\nIni adalah detail posting dengan gambar: ![gambar](https://example.com/assets/image.png)")]
     pub detail: String, 
-    pub assets: Vec<Asset>,
+    pub asset_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -22,7 +21,7 @@ pub struct CreatePostingRequest {
     pub judul: String,
     #[schema(example = "## Detail Posting Baru\n\nIni adalah detail posting baru.")]
     pub detail: String,
-    pub assets: Option<Vec<Asset>>,
+    pub asset_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -31,5 +30,5 @@ pub struct UpdatePostingRequest {
     pub judul: Option<String>,
     #[schema(example = "## Detail Posting Diperbarui\n\nIni adalah detail posting yang sudah diperbarui.")]
     pub detail: Option<String>,
-    pub assets: Option<Vec<Asset>>,
+    pub asset_ids: Option<Vec<Uuid>>,
 }

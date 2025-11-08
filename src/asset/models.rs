@@ -12,6 +12,4 @@ pub struct Asset {
     pub url: String,
     #[schema(example = "This is an example image asset.")]
     pub description: Option<String>,
-    #[schema(example = "uploads/images")]
-    pub folder: Option<String>,
 }

@@ -51,10 +51,11 @@ pub fn list_folder_contents(folder_name: &str) -> std::io::Result<Vec<FolderCont
 
 pub async fn save_file(
     mut payload: actix_multipart::Multipart,
-) -> Result<(String, Uuid, Option<String>), String> {
+) -> Result<(String, Option<Uuid>, Vec<String>), String> {
     let mut filename: Option<String> = None;
     let mut posting_id: Option<Uuid> = None;
-    let mut folder: Option<String> = None;
+    let mut folders: Vec<String> = Vec::new();
+    let mut file_data: Option<Vec<u8>> = None;
 
     while let Some(field) = payload.next().await {
         let mut field = field.map_err(|e| e.to_string())?;
@@ -71,20 +72,13 @@ pub async fn save_file(
                     Uuid::new_v4(),
                     sanitize(original_filename)
                 );
-
-                let mut file_path = PathBuf::from(ASSETS_DIR);
-                if let Some(ref f) = folder {
-                    file_path = file_path.join(f);
-                }
-                file_path = file_path.join(&new_filename);
-                info!("Saving file to: {:?}", file_path);
-
-                let mut f = web::block(move || fs::File::create(file_path)).await.unwrap().unwrap();
-                while let Some(chunk) = field.next().await {
-                    let data = chunk.unwrap();
-                    f = web::block(move || f.write_all(&data).map(|_| f)).await.unwrap().unwrap();
-                }
                 filename = Some(new_filename);
+
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.next().await {
+                    bytes.extend_from_slice(&chunk.unwrap());
+                }
+                file_data = Some(bytes);
             },
             "posting_id" => {
                 let mut bytes = Vec::new();
@@ -97,37 +91,37 @@ pub async fn save_file(
                     }
                 }
             },
-            "folder" => {
+            "folders" => {
                 let mut bytes = Vec::new();
                 while let Some(chunk) = field.next().await {
                     bytes.extend_from_slice(&chunk.unwrap());
                 }
                 if let Ok(folder_str) = String::from_utf8(bytes) {
-                    folder = Some(folder_str);
+                    folders.push(folder_str);
                 }
             }
             _ => (),
         }
     }
 
-    if let (Some(fname), Some(pid)) = (filename, posting_id) {
-        Ok((fname, pid, folder))
+    if let (Some(fname), Some(data)) = (filename, file_data) {
+        let file_path = Path::new(ASSETS_DIR).join(&fname);
+        info!("Saving file to: {:?}", file_path);
+        let mut f = web::block(move || fs::File::create(file_path)).await.unwrap().unwrap();
+        web::block(move || f.write_all(&data)).await.unwrap().unwrap();
+        Ok((fname, posting_id, folders))
     } else {
-        error!("Invalid multipart payload. Filename or posting_id missing.");
+        error!("Invalid multipart payload. File data or filename missing.");
         Err("Invalid multipart payload".to_string())
     }
 }
 
-pub fn get_asset_path(filename: &str, folder: Option<&str>) -> PathBuf {
-    let mut path = PathBuf::from(ASSETS_DIR);
-    if let Some(f) = folder {
-        path = path.join(f);
-    }
-    path.join(filename)
+pub fn get_asset_path(filename: &str) -> PathBuf {
+    PathBuf::from(ASSETS_DIR).join(filename)
 }
 
-pub fn delete_asset_file(filename: &str, folder: Option<&str>) -> std::io::Result<()> {
-    let file_path = get_asset_path(filename, folder);
+pub fn delete_asset_file(filename: &str) -> std::io::Result<()> {
+    let file_path = get_asset_path(filename);
     info!("Deleting file at: {:?}", file_path);
     fs::remove_file(file_path)
 }

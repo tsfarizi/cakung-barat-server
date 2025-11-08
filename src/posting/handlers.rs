@@ -1,8 +1,24 @@
 use actix_web::{web::{self, Path}, HttpResponse, Responder};
 use log::{info, error, debug};
-use crate::schema::{NaiveDate, Uuid};
+use serde::Serialize;
+use utoipa::ToSchema;
 
+use crate::schema::{NaiveDate, Uuid};
+use crate::asset::models::Asset;
 use crate::{db::SharedAppState, posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest}};
+
+// --- Response Model ---
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PostingResponse {
+    pub id: Uuid,
+    pub judul: String,
+    pub tanggal: NaiveDate,
+    pub detail: String,
+    pub assets: Vec<Asset>,
+}
+
+// --- Handlers ---
 
 #[utoipa::path(
     context_path = "/api",
@@ -10,15 +26,30 @@ use crate::{db::SharedAppState, posting::models::{CreatePostingRequest, Posting,
     get,
     path = "/postings",
     responses(
-        (status = 200, description = "List of all postings", body = [Posting])
+        (status = 200, description = "List of all postings", body = [PostingResponse]),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
 )]
 pub async fn get_all_postings(data: web::Data<SharedAppState>) -> impl Responder {
     info!("Request to get all postings");
-    let postings = data.postings.read();
-    let all_postings: Vec<Posting> = postings.values().cloned().collect();
-    debug!("Found {} postings", all_postings.len());
-    HttpResponse::Ok().json(all_postings)
+    let postings_map = data.postings.read();
+    let assets_map = data.assets.read();
+
+    let response: Vec<PostingResponse> = postings_map.values().map(|posting| {
+        let assets: Vec<Asset> = posting.asset_ids.iter()
+            .filter_map(|id| assets_map.get(id).cloned())
+            .collect();
+        PostingResponse {
+            id: posting.id,
+            judul: posting.judul.clone(),
+            tanggal: posting.tanggal,
+            detail: posting.detail.clone(),
+            assets,
+        }
+    }).collect();
+
+    debug!("Found and hydrated {} postings", response.len());
+    HttpResponse::Ok().json(response)
 }
 
 #[utoipa::path(
@@ -27,8 +58,9 @@ pub async fn get_all_postings(data: web::Data<SharedAppState>) -> impl Responder
     get,
     path = "/postings/{id}",
     responses(
-        (status = 200, description = "Posting found", body = Posting),
-        (status = 404, description = "Posting not found")
+        (status = 200, description = "Posting found", body = PostingResponse),
+        (status = 404, description = "Posting not found", body = ErrorResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
     ),
     params(
         ("id" = Uuid, Path, description = "ID of the posting to retrieve")
@@ -40,10 +72,23 @@ pub async fn get_posting_by_id(
 ) -> impl Responder {
     let posting_id = id.into_inner();
     info!("Request to get posting by id: {:?}", posting_id);
-    let postings = data.postings.read();
-    if let Some(posting) = postings.get(&posting_id) {
-        debug!("Posting found: {:?}", posting_id);
-        HttpResponse::Ok().json(posting)
+    let postings_map = data.postings.read();
+
+    if let Some(posting) = postings_map.get(&posting_id) {
+        let assets_map = data.assets.read();
+        let assets: Vec<Asset> = posting.asset_ids.iter()
+            .filter_map(|id| assets_map.get(id).cloned())
+            .collect();
+
+        let response = PostingResponse {
+            id: posting.id,
+            judul: posting.judul.clone(),
+            tanggal: posting.tanggal,
+            detail: posting.detail.clone(),
+            assets,
+        };
+        debug!("Posting found and hydrated: {:?}", posting_id);
+        HttpResponse::Ok().json(response)
     } else {
         error!("Posting not found: {:?}", posting_id);
         HttpResponse::NotFound().body("Posting not found")
@@ -57,8 +102,9 @@ pub async fn get_posting_by_id(
     path = "/postings",
     request_body = CreatePostingRequest,
     responses(
-        (status = 201, description = "Posting created successfully", body = Posting),
-        (status = 400, description = "Invalid request")
+        (status = 201, description = "Posting created successfully", body = PostingResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
 )]
 pub async fn create_posting(
@@ -66,29 +112,47 @@ pub async fn create_posting(
     data: web::Data<SharedAppState>,
 ) -> impl Responder {
     info!("Attempting to create a new posting");
-    let mut postings = data.postings.write();
-    let new_id = ::uuid::Uuid::new_v4();
-    let current_date = ::chrono::Utc::now().date_naive();
+    let assets_map = data.assets.read();
+    let asset_ids = req.asset_ids.clone().unwrap_or_default();
 
-    let assets = req.assets.clone().unwrap_or_default().into_iter().map(|mut asset| {
-        if asset.id.0.is_nil() {
-            asset.id = Uuid(::uuid::Uuid::new_v4());
+    // Validate that all provided asset IDs exist
+    for id in &asset_ids {
+        if !assets_map.contains_key(id) {
+            let msg = format!("Asset with ID {:?} not found", id);
+            error!("{}", &msg);
+            return HttpResponse::BadRequest().body(msg);
         }
-        asset.url = format!("/assets/{}", asset.id.0);
-        asset
-    }).collect();
+    }
+
+    let mut postings = data.postings.write();
+    let new_id = Uuid(::uuid::Uuid::new_v4());
+    let current_date = NaiveDate(::chrono::Utc::now().date_naive());
 
     let new_posting = Posting {
-        id: Uuid(new_id),
+        id: new_id,
         judul: req.judul.clone(),
-        tanggal: NaiveDate(current_date),
+        tanggal: current_date,
         detail: req.detail.clone(),
+        asset_ids,
+    };
+
+    postings.insert(new_id, new_posting.clone());
+    info!("New posting created with id: {:?}", new_id);
+
+    // Construct and return the hydrated response
+    let assets: Vec<Asset> = new_posting.asset_ids.iter()
+        .filter_map(|id| assets_map.get(id).cloned())
+        .collect();
+    
+    let response = PostingResponse {
+        id: new_posting.id,
+        judul: new_posting.judul,
+        tanggal: new_posting.tanggal,
+        detail: new_posting.detail,
         assets,
     };
 
-    postings.insert(Uuid(new_id), new_posting.clone());
-    info!("New posting created with id: {}", new_id);
-    HttpResponse::Created().json(new_posting)
+    HttpResponse::Created().json(response)
 }
 
 #[utoipa::path(
@@ -98,9 +162,10 @@ pub async fn create_posting(
     path = "/postings/{id}",
     request_body = UpdatePostingRequest,
     responses(
-        (status = 200, description = "Posting updated successfully", body = Posting),
-        (status = 404, description = "Posting not found"),
-        (status = 400, description = "Invalid request")
+        (status = 200, description = "Posting updated successfully", body = PostingResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Posting not found", body = ErrorResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
     ),
     params(
         ("id" = Uuid, Path, description = "ID of the posting to update")
@@ -124,18 +189,33 @@ pub async fn update_posting(
             debug!("Updating posting detail for id: {:?}", posting_id);
             posting.detail = detail.clone();
         }
-        if let Some(assets) = &req.assets {
-            debug!("Updating posting assets for id: {:?}", posting_id);
-            posting.assets = assets.clone().into_iter().map(|mut asset| {
-                if asset.id.0.is_nil() {
-                    asset.id = Uuid(::uuid::Uuid::new_v4());
+        if let Some(asset_ids) = &req.asset_ids {
+            let assets_map = data.assets.read();
+            for id in asset_ids {
+                if !assets_map.contains_key(id) {
+                    let msg = format!("Asset with ID {:?} not found", id);
+                    error!("{}", &msg);
+                    return HttpResponse::BadRequest().body(msg);
                 }
-                asset.url = format!("/assets/{}", asset.id.0);
-                asset
-            }).collect();
+            }
+            debug!("Updating posting asset IDs for id: {:?}", posting_id);
+            posting.asset_ids = asset_ids.clone();
         }
+
+        let assets_map = data.assets.read();
+        let assets: Vec<Asset> = posting.asset_ids.iter()
+            .filter_map(|id| assets_map.get(id).cloned())
+            .collect();
+
+        let response = PostingResponse {
+            id: posting.id,
+            judul: posting.judul.clone(),
+            tanggal: posting.tanggal,
+            detail: posting.detail.clone(),
+            assets,
+        };
         info!("Posting with id: {:?} updated successfully", posting_id);
-        HttpResponse::Ok().json(posting.clone())
+        HttpResponse::Ok().json(response)
     } else {
         error!("Posting not found for update: {:?}", posting_id);
         HttpResponse::NotFound().body("Posting not found")
@@ -149,7 +229,8 @@ pub async fn update_posting(
     path = "/postings/{id}",
     responses(
         (status = 204, description = "Posting deleted successfully"),
-        (status = 404, description = "Posting not found")
+        (status = 404, description = "Posting not found", body = ErrorResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
     ),
     params(
         ("id" = Uuid, Path, description = "ID of the posting to delete")
