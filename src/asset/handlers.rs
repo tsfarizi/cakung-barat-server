@@ -385,7 +385,6 @@ pub struct UploadAssetRequest {
     #[allow(unused)]
     pub file: Vec<u8>,
     #[allow(unused)]
-    #[schema(value_type = String, nullable = true)]
     pub posting_id: Option<Uuid>,
     #[allow(unused)]
     pub folders: Option<Vec<String>>,
