@@ -6,8 +6,9 @@ use serde::Serialize;
 use utoipa::ToSchema;
 use std::collections::HashSet;
 
-use crate::schema::Uuid;
-use crate::{db::SharedAppState, asset::models::Asset, storage};
+use uuid::Uuid;
+use crate::{db::AppState, asset::models::Asset, storage, posting::models::Posting};
+use crate::ErrorResponse;
 
 // --- New Response Models for get_all_assets_structured ---
 
@@ -40,46 +41,56 @@ pub struct AllAssetsResponse {
 )]
 pub async fn upload_asset(
     payload: Multipart,
-    data: web::Data<SharedAppState>,
+    data: web::Data<AppState>,
 ) -> impl Responder {
-    info!("Attempting to upload an asset");
+    info!("Executing upload_asset handler");
+    debug!("Attempting to save file from multipart payload.");
     match storage::save_file(payload).await {
         Ok((filename, posting_id_opt, folder_names)) => {
-            let asset_id = Uuid(::uuid::Uuid::new_v4());
+            info!("File saved successfully with filename: {}", filename);
+            let asset_id = Uuid::new_v4();
+            debug!("Generated new asset ID: {:?}", asset_id);
             let new_asset = Asset {
                 id: asset_id,
                 filename: filename.clone(),
-                url: format!("/assets/{}", filename),
+                url: format!("/assets/serve/{}", filename),
                 description: None,
             };
 
-            // Add asset to the central assets map
-            data.assets.write().insert(asset_id, new_asset.clone());
-            info!("Asset {:?} created and stored centrally.", asset_id);
+            debug!("Attempting to insert new asset into 'assets' column family.");
+            if let Err(e) = data.insert_item("assets", &asset_id, &new_asset) {
+                error!("Failed to insert asset into db: {}", e);
+                return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to save asset"));
+            }
+            info!("Asset {:?} created and stored in database.", asset_id);
 
-            // Associate asset with folders
-            let mut folders_map = data.folders.write();
             for folder_name in folder_names {
-                folders_map.entry(folder_name.clone()).or_default().push(asset_id);
-                debug!("Asset {:?} associated with folder '{}'", asset_id, folder_name);
+                debug!("Associating asset {:?} with folder '{}'", asset_id, folder_name);
+                let mut asset_ids = data.get_folder_contents(&folder_name).unwrap().unwrap_or_default();
+                asset_ids.push(asset_id);
+                data.insert_folder_contents(&folder_name, &asset_ids).unwrap();
+                info!("Asset {:?} successfully associated with folder '{}'", asset_id, folder_name);
             }
 
-            // Optionally, associate asset with a posting
             if let Some(posting_id) = posting_id_opt {
-                if let Some(posting) = data.postings.write().get_mut(&Uuid(posting_id)) {
+                debug!("Associating asset {:?} with posting '{:?}'", asset_id, posting_id);
+                if let Ok(Some(mut posting)) = data.get_item::<Posting>("postings", &posting_id) {
                     posting.asset_ids.push(asset_id);
-                    debug!("Asset {:?} associated with posting '{:?}'", asset_id, posting_id);
+                    if let Err(e) = data.insert_item("postings", &posting.id, &posting) {
+                        error!("Failed to update posting {} with new asset {}: {}", posting.id, asset_id, e);
+                    } else {
+                        info!("Asset {:?} successfully associated with posting '{:?}'", asset_id, posting_id);
+                    }
                 } else {
                     error!("Posting not found for asset association: posting_id='{:?}'", posting_id);
-                    // Note: Asset is created anyway, just not linked. This could be debated.
                 }
             }
 
             HttpResponse::Created().json(new_asset)
         }
         Err(e) => {
-            error!("Failed to upload asset: {}", e);
-            HttpResponse::BadRequest().body(e)
+            error!("Failed during file upload process: {}", e);
+            HttpResponse::BadRequest().json(ErrorResponse::bad_request(&e))
         },
     }
 }
@@ -97,43 +108,64 @@ pub async fn upload_asset(
 )]
 pub async fn delete_asset(
     id: Path<Uuid>,
-    data: web::Data<SharedAppState>,
+    data: web::Data<AppState>,
 ) -> impl Responder {
     let asset_id_to_delete = id.into_inner();
-    info!("Attempting to delete asset with id: {:?}", asset_id_to_delete);
+    info!("Executing delete_asset handler for ID: {:?}", asset_id_to_delete);
 
-    // 1. Remove from central asset map and get the filename
-    let asset_to_delete = data.assets.write().remove(&asset_id_to_delete);
+    debug!("Attempting to fetch asset with ID {:?} for deletion.", asset_id_to_delete);
+    match data.get_item::<Asset>("assets", &asset_id_to_delete) {
+        Ok(Some(asset)) => {
+            info!("Found asset {:?} to delete.", asset_id_to_delete);
+            debug!("Attempting to delete physical asset file: {}", &asset.filename);
+            if let Err(e) = storage::delete_asset_file(&asset.filename) {
+                error!("Failed to delete physical asset file {}: {}.", asset.filename, e);
+                return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to delete asset file"));
+            }
+            info!("Physical file {} deleted successfully.", asset.filename);
 
-    if let Some(asset) = asset_to_delete {
-        // 2. Delete physical file
-        if let Err(e) = storage::delete_asset_file(&asset.filename) {
-            error!("Failed to delete physical asset file {}: {}. Re-inserting asset into state.", asset.filename, e);
-            // Re-insert asset if file deletion fails to maintain consistency
-            data.assets.write().insert(asset_id_to_delete, asset);
-            return HttpResponse::InternalServerError().body("Failed to delete asset file");
+            debug!("Attempting to delete asset record {:?} from 'assets' column family.", asset_id_to_delete);
+            if let Err(e) = data.delete_item("assets", &asset_id_to_delete) {
+                error!("Failed to delete asset from db, but file was deleted: {}", e);
+                // In a real app, you might want to handle this inconsistency.
+            }
+
+            debug!("Scanning postings to disassociate asset {:?}", asset_id_to_delete);
+            if let Ok(postings) = data.get_all_items::<Posting>("postings") {
+                for mut posting in postings {
+                    if posting.asset_ids.contains(&asset_id_to_delete) {
+                        debug!("Disassociating asset {:?} from posting {:?}", asset_id_to_delete, posting.id);
+                        posting.asset_ids.retain(|id| *id != asset_id_to_delete);
+                        data.insert_item("postings", &posting.id, &posting).unwrap();
+                    }
+                }
+            }
+            
+            debug!("Scanning folders to disassociate asset {:?}", asset_id_to_delete);
+            let cf = data.db.cf_handle("folders").unwrap();
+            let iter = data.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+            for item in iter {
+                let (folder_name_bytes, asset_ids_bytes) = item.unwrap();
+                let folder_name = String::from_utf8(folder_name_bytes.to_vec()).unwrap();
+                let mut asset_ids: Vec<Uuid> = serde_json::from_slice(&asset_ids_bytes).unwrap();
+                if asset_ids.contains(&asset_id_to_delete) {
+                    debug!("Disassociating asset {:?} from folder '{}'", asset_id_to_delete, folder_name);
+                    asset_ids.retain(|id| *id != asset_id_to_delete);
+                    data.insert_folder_contents(&folder_name, &asset_ids).unwrap();
+                }
+            }
+
+            info!("Asset {:?} deleted successfully from all records.", asset_id_to_delete);
+            HttpResponse::NoContent().finish()
+        },
+        Ok(None) => {
+            error!("Asset not found for deletion: {:?}", asset_id_to_delete);
+            HttpResponse::NotFound().json(ErrorResponse::not_found(&format!("Asset with ID {:?} not found", asset_id_to_delete)))
+        },
+        Err(e) => {
+            error!("Failed to retrieve asset for deletion from database: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to retrieve asset"))
         }
-        info!("Physical file {} deleted.", asset.filename);
-
-        // 3. Remove asset ID from all folders
-        let mut folders_map = data.folders.write();
-        folders_map.values_mut().for_each(|asset_ids| {
-            asset_ids.retain(|id| *id != asset_id_to_delete);
-        });
-        debug!("Removed asset ID {:?} from all folder associations.", asset_id_to_delete);
-
-        // 4. Remove asset ID from all postings
-        let mut postings_map = data.postings.write();
-        postings_map.values_mut().for_each(|posting| {
-            posting.asset_ids.retain(|id| *id != asset_id_to_delete);
-        });
-        debug!("Removed asset ID {:?} from all posting associations.", asset_id_to_delete);
-
-        info!("Asset {:?} deleted successfully from all records.", asset_id_to_delete);
-        HttpResponse::NoContent().finish()
-    } else {
-        error!("Asset not found for deletion: {:?}", asset_id_to_delete);
-        HttpResponse::NotFound().body("Asset not found")
     }
 }
 
@@ -150,13 +182,23 @@ pub async fn delete_asset(
         ("id" = Uuid, Path, description = "ID of the asset to retrieve")
     )
 )]
-pub async fn get_asset_by_id(id: Path<Uuid>, data: web::Data<SharedAppState>) -> impl Responder {
+pub async fn get_asset_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> impl Responder {
     let asset_id = id.into_inner();
-    debug!("Request to get asset by id: {:?}", asset_id);
-    if let Some(asset) = data.assets.read().get(&asset_id) {
-        HttpResponse::Ok().json(asset)
-    } else {
-        HttpResponse::NotFound().body("Asset not found")
+    info!("Executing get_asset_by_id handler for ID: {:?}", asset_id);
+    debug!("Attempting to fetch item with ID {:?} from 'assets' column family.", asset_id);
+    match data.get_item::<Asset>("assets", &asset_id) {
+        Ok(Some(asset)) => {
+            info!("Successfully fetched asset with ID: {:?}", asset_id);
+            HttpResponse::Ok().json(asset)
+        },
+        Ok(None) => {
+            error!("Asset not found in database for ID: {:?}", asset_id);
+            HttpResponse::NotFound().json(ErrorResponse::not_found(&format!("Asset with ID {:?} not found", asset_id)))
+        },
+        Err(e) => {
+            error!("Failed to get asset by ID '{}' from database: {}", asset_id, e);
+            HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to retrieve asset"))
+        }
     }
 }
 
@@ -170,26 +212,49 @@ pub async fn get_asset_by_id(id: Path<Uuid>, data: web::Data<SharedAppState>) ->
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
 )]
-pub async fn get_all_assets_structured(data: web::Data<SharedAppState>) -> impl Responder {
-    let assets_map = data.assets.read();
-    let folders_map = data.folders.read();
-    let mut asset_ids_in_folders = HashSet::new();
+pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Responder {
+    info!("Executing get_all_assets_structured handler");
+    debug!("Fetching all assets from 'assets' column family.");
+    let all_assets = match data.get_all_items::<Asset>("assets") {
+        Ok(assets) => {
+            info!("Successfully fetched {} assets.", assets.len());
+            assets
+        },
+        Err(e) => {
+            error!("Failed to get all assets from database: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to retrieve assets"));
+        }
+    };
 
-    let folders_with_assets: Vec<FolderWithAssets> = folders_map.iter().map(|(name, asset_ids)| {
+    let mut asset_ids_in_folders = HashSet::new();
+    let mut folders_with_assets: Vec<FolderWithAssets> = Vec::new();
+
+    debug!("Fetching all folders and their asset IDs.");
+    let cf = data.db.cf_handle("folders").unwrap();
+    let iter = data.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (folder_name_bytes, asset_ids_bytes) = item.unwrap();
+        let name = String::from_utf8(folder_name_bytes.to_vec()).unwrap();
+        let asset_ids: Vec<Uuid> = serde_json::from_slice(&asset_ids_bytes).unwrap();
+        debug!("Processing folder '{}' with {} assets.", name, asset_ids.len());
+        
         let assets_in_folder: Vec<Asset> = asset_ids.iter().filter_map(|id| {
             asset_ids_in_folders.insert(*id);
-            assets_map.get(id).cloned()
+            all_assets.iter().find(|a| a.id == *id).cloned()
         }).collect();
-        FolderWithAssets {
-            name: name.clone(),
-            assets: assets_in_folder,
-        }
-    }).collect();
 
-    let unassigned_assets: Vec<Asset> = assets_map.values()
+        folders_with_assets.push(FolderWithAssets {
+            name,
+            assets: assets_in_folder,
+        });
+    }
+    info!("Processed {} folders.", folders_with_assets.len());
+
+    debug!("Filtering for unassigned assets.");
+    let unassigned_assets: Vec<Asset> = all_assets.into_iter()
         .filter(|asset| !asset_ids_in_folders.contains(&asset.id))
-        .cloned()
         .collect();
+    info!("Found {} unassigned assets.", unassigned_assets.len());
 
     let response = AllAssetsResponse {
         folders: folders_with_assets,
@@ -204,23 +269,31 @@ pub async fn get_all_assets_structured(data: web::Data<SharedAppState>) -> impl 
 
 pub async fn serve_asset(
     req: actix_web::HttpRequest,
-    data: web::Data<SharedAppState>,
+    data: web::Data<AppState>,
 ) -> impl Responder {
     let filename: String = req.match_info().query("filename").into();
-    debug!("Attempting to serve asset with filename: {}", &filename);
+    info!("Executing serve_asset handler for filename: {}", &filename);
     
-    // In the new model, we don't know the asset ID from the filename alone easily.
-    // A better URL would be /assets/{id}/serve, but for now, let's find it by filename.
-    let assets = data.assets.read();
-    if let Some(asset) = assets.values().find(|a| a.filename == filename) {
-        let file_path = storage::get_asset_path(&asset.filename);
-        if let Ok(file) = NamedFile::open(file_path) {
-            return file.into_response(&req);
+    debug!("Searching for asset with filename '{}' in database.", &filename);
+    match data.get_all_items::<Asset>("assets") {
+        Ok(assets) => {
+            if let Some(asset) = assets.iter().find(|a| a.filename == filename) {
+                info!("Asset found for filename: {}. Serving file.", &filename);
+                let file_path = storage::get_asset_path(&asset.filename);
+                if let Ok(file) = NamedFile::open(file_path) {
+                    return file.into_response(&req);
+                } else {
+                    error!("Asset record found for '{}', but physical file is missing at path: {:?}", &filename, storage::get_asset_path(&asset.filename));
+                }
+            }
+        },
+        Err(e) => {
+            error!("Database error while trying to serve asset '{}': {}", &filename, e);
         }
     }
     
     error!("Asset not found for serving: {}", &filename);
-    HttpResponse::NotFound().body("Asset not found")
+    HttpResponse::NotFound().json(ErrorResponse::not_found(&format!("Asset '{}' not found", filename)))
 }
 
 #[utoipa::path(
@@ -235,16 +308,29 @@ pub async fn serve_asset(
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
 )]
-pub async fn create_folder_handler(req: Json<CreateFolderRequest>) -> impl Responder {
-    info!("Attempting to create folder: {}", &req.folder_name);
+pub async fn create_folder_handler(req: Json<CreateFolderRequest>, data: web::Data<AppState>) -> impl Responder {
+    info!("Executing create_folder_handler for folder: {}", &req.folder_name);
+    
+    if req.folder_name.is_empty() {
+        error!("Folder name cannot be empty.");
+        return HttpResponse::BadRequest().json(ErrorResponse::bad_request("Folder name cannot be empty"));
+    }
+    
+    debug!("Attempting to create folder '{}' on filesystem.", &req.folder_name);
     match storage::create_folder(&req.folder_name) {
         Ok(_) => {
-            info!("Folder '{}' created successfully", &req.folder_name);
+            info!("Folder '{}' created on filesystem.", &req.folder_name);
+            debug!("Attempting to insert empty folder record '{}' into database.", &req.folder_name);
+            if let Err(e) = data.insert_folder_contents(&req.folder_name, &vec![]) {
+                error!("Failed to create folder record in db: {}", e);
+                return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to create folder record"));
+            }
+            info!("Folder record '{}' created successfully in database.", &req.folder_name);
             HttpResponse::Created().finish()
         },
         Err(e) => {
-            error!("Failed to create folder '{}': {}", &req.folder_name, e);
-            HttpResponse::BadRequest().body(e.to_string())
+            error!("Failed to create folder '{}' on filesystem: {}", &req.folder_name, e);
+            HttpResponse::BadRequest().json(ErrorResponse::bad_request(&e.to_string()))
         },
     }
 }
@@ -253,7 +339,10 @@ pub async fn create_folder_handler(req: Json<CreateFolderRequest>) -> impl Respo
     context_path = "/api",
     tag = "Asset Service",
     get,
-    path = "/assets/folders/{folder_name:.*}",
+    path = "/assets/folders/{folder_name}",
+    params(
+        ("folder_name" = String, Path, description = "Name of the folder to list contents")
+    ),
     responses(
         (status = 200, description = "Folder contents listed successfully", body = Vec<FolderContent>),
         (status = 404, description = "Folder not found", body = ErrorResponse),
@@ -261,15 +350,28 @@ pub async fn create_folder_handler(req: Json<CreateFolderRequest>) -> impl Respo
     )
 )]
 pub async fn list_folder_handler(folder_name: Path<String>) -> impl Responder {
-    info!("Listing contents of folder: {}", &folder_name);
+    let folder_name = folder_name.into_inner();
+    info!("Executing list_folder_handler for folder: {}", &folder_name);
+    
+    if folder_name.is_empty() {
+        error!("Folder name cannot be empty.");
+        return HttpResponse::BadRequest().json(ErrorResponse::bad_request("Folder name cannot be empty"));
+    }
+    
+    if folder_name.contains("..") || folder_name.starts_with('/') || folder_name.contains("//") {
+        error!("Invalid folder name provided: {}", &folder_name);
+        return HttpResponse::BadRequest().json(ErrorResponse::bad_request("Invalid folder name"));
+    }
+    
+    debug!("Attempting to list contents of folder '{}' from filesystem.", &folder_name);
     match storage::list_folder_contents(&folder_name) {
         Ok(contents) => {
-            debug!("Found {} items in folder '{}'", contents.len(), &folder_name);
+            info!("Successfully listed {} items in folder '{}'", contents.len(), &folder_name);
             HttpResponse::Ok().json(contents)
         },
-        Err(_) => {
-            error!("Folder not found: {}", &folder_name);
-            HttpResponse::NotFound().finish()
+        Err(e) => {
+            error!("Failed to list folder contents for '{}': {}", &folder_name, e);
+            HttpResponse::NotFound().json(ErrorResponse::not_found(&format!("Folder '{}' not found", folder_name)))
         },
     }
 }
@@ -281,6 +383,7 @@ pub struct UploadAssetRequest {
     #[allow(unused)]
     pub file: Vec<u8>,
     #[allow(unused)]
+    #[schema(value_type = String)]
     pub posting_id: Option<Uuid>,
     #[allow(unused)]
     pub folders: Option<Vec<String>>,
@@ -289,4 +392,11 @@ pub struct UploadAssetRequest {
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct CreateFolderRequest {
     pub folder_name: String,
+}
+
+// This struct is used for documentation purposes to show the form fields in Swagger UI
+#[allow(dead_code)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct CreateFolderForm {
+    folder_name: String,
 }

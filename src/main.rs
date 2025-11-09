@@ -1,9 +1,9 @@
-use std::sync::Arc;
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 use serde::Serialize;
+use chrono;
 
 mod db;
 mod storage;
@@ -11,19 +11,49 @@ mod posting;
 mod asset;
 mod schema;
 
-use crate::{
-    db::AppState,
-};
+use crate::db::AppState;
 
 #[derive(Serialize, ToSchema)]
-struct ErrorResponse {
+pub struct ErrorResponse {
+    error: String,
     message: String,
+    timestamp: String,
+}
+
+impl ErrorResponse {
+    pub fn new(error_type: &str, message: &str) -> Self {
+        Self {
+            error: error_type.to_string(),
+            message: message.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    pub fn not_found(message: &str) -> Self {
+        Self::new("NotFound", message)
+    }
+
+    pub fn bad_request(message: &str) -> Self {
+        Self::new("BadRequest", message)
+    }
+
+    pub fn internal_error(message: &str) -> Self {
+        Self::new("InternalServerError", message)
+    }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     unsafe { std::env::set_var("RUST_LOG", "info"); }
     env_logger::init();
+
+    #[derive(ToSchema)]
+    #[schema(value_type = String)]
+    struct Uuid;
+
+    #[derive(ToSchema)]
+    #[schema(value_type = String)]
+    struct NaiveDate;
 
     #[derive(OpenApi)]
     #[openapi(
@@ -53,8 +83,8 @@ async fn main() -> std::io::Result<()> {
                 asset::handlers::FolderWithAssets,
                 storage::FolderContent,
                 ErrorResponse,
-                schema::Uuid,
-                schema::NaiveDate,
+                Uuid,
+                NaiveDate
             )
         ),
         tags(
@@ -69,7 +99,7 @@ async fn main() -> std::io::Result<()> {
     )]
     struct ApiDoc;
 
-    let app_state = web::Data::new(Arc::new(AppState::new()));
+    let app_state = web::Data::new(AppState::new());
 
     log::info!("Starting server at http://0.0.0.0:8080");
 
@@ -100,13 +130,13 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/assets")
                         .route(web::get().to(asset::handlers::get_all_assets_structured))
                         .route(web::post().to(asset::handlers::upload_asset)))
-                    .service(web::resource("/assets/{id}")
-                        .route(web::get().to(asset::handlers::get_asset_by_id))
-                        .route(web::delete().to(asset::handlers::delete_asset)))
                     .service(web::resource("/assets/folders")
                         .route(web::post().to(asset::handlers::create_folder_handler)))
                     .service(web::resource("/assets/folders/{folder_name:.*}")
                         .route(web::get().to(asset::handlers::list_folder_handler)))
+                    .service(web::resource("/assets/{id}")
+                        .route(web::get().to(asset::handlers::get_asset_by_id))
+                        .route(web::delete().to(asset::handlers::delete_asset)))
             )
             .service(web::resource("/assets/serve/{filename:.*}")
                 .route(web::get().to(asset::handlers::serve_asset)))

@@ -3,9 +3,10 @@ use log::{info, error, debug};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::schema::{NaiveDate, Uuid};
+use chrono::NaiveDate;
+use uuid::Uuid;
 use crate::asset::models::Asset;
-use crate::{db::SharedAppState, posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest}};
+use crate::{db::AppState, ErrorResponse, posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest}};
 
 // --- Response Model ---
 
@@ -30,26 +31,38 @@ pub struct PostingResponse {
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
 )]
-pub async fn get_all_postings(data: web::Data<SharedAppState>) -> impl Responder {
-    info!("Request to get all postings");
-    let postings_map = data.postings.read();
-    let assets_map = data.assets.read();
-
-    let response: Vec<PostingResponse> = postings_map.values().map(|posting| {
-        let assets: Vec<Asset> = posting.asset_ids.iter()
-            .filter_map(|id| assets_map.get(id).cloned())
-            .collect();
-        PostingResponse {
-            id: posting.id,
-            judul: posting.judul.clone(),
-            tanggal: posting.tanggal,
-            detail: posting.detail.clone(),
-            assets,
+pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
+    info!("Executing get_all_postings handler");
+    debug!("Attempting to fetch all items from 'postings' column family.");
+    match data.get_all_items::<Posting>("postings") {
+        Ok(postings) => {
+            info!("Successfully fetched {} postings from the database.", postings.len());
+            debug!("Hydrating posting responses with their associated assets.");
+            let response: Vec<PostingResponse> = postings.iter().map(|posting| {
+                debug!("Hydrating assets for posting ID: {:?}", posting.id);
+                let assets: Vec<Asset> = posting.asset_ids.iter()
+                    .filter_map(|id| {
+                        debug!("Fetching asset with ID: {:?}", id);
+                        data.get_item::<Asset>("assets", id).unwrap_or(None)
+                    })
+                    .collect();
+                debug!("Found {} assets for posting ID: {:?}", assets.len(), posting.id);
+                PostingResponse {
+                    id: posting.id,
+                    judul: posting.judul.clone(),
+                    tanggal: posting.tanggal,
+                    detail: posting.detail.clone(),
+                    assets,
+                }
+            }).collect();
+            info!("Successfully hydrated all posting responses.");
+            HttpResponse::Ok().json(response)
+        },
+        Err(e) => {
+            error!("Failed to get all postings from database: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to retrieve postings"))
         }
-    }).collect();
-
-    debug!("Found and hydrated {} postings", response.len());
-    HttpResponse::Ok().json(response)
+    }
 }
 
 #[utoipa::path(
@@ -68,30 +81,41 @@ pub async fn get_all_postings(data: web::Data<SharedAppState>) -> impl Responder
 )]
 pub async fn get_posting_by_id(
     id: Path<Uuid>,
-    data: web::Data<SharedAppState>,
+    data: web::Data<AppState>,
 ) -> impl Responder {
     let posting_id = id.into_inner();
-    info!("Request to get posting by id: {:?}", posting_id);
-    let postings_map = data.postings.read();
+    info!("Executing get_posting_by_id handler for ID: {:?}", posting_id);
+    debug!("Attempting to fetch item with ID {:?} from 'postings' column family.", posting_id);
+    match data.get_item::<Posting>("postings", &posting_id) {
+        Ok(Some(posting)) => {
+            info!("Successfully fetched posting with ID: {:?}", posting_id);
+            debug!("Hydrating assets for posting ID: {:?}", posting.id);
+            let assets: Vec<Asset> = posting.asset_ids.iter()
+                .filter_map(|id| {
+                    debug!("Fetching asset with ID: {:?}", id);
+                    data.get_item::<Asset>("assets", id).unwrap_or(None)
+                })
+                .collect();
+            debug!("Found {} assets for posting ID: {:?}", assets.len(), posting.id);
 
-    if let Some(posting) = postings_map.get(&posting_id) {
-        let assets_map = data.assets.read();
-        let assets: Vec<Asset> = posting.asset_ids.iter()
-            .filter_map(|id| assets_map.get(id).cloned())
-            .collect();
-
-        let response = PostingResponse {
-            id: posting.id,
-            judul: posting.judul.clone(),
-            tanggal: posting.tanggal,
-            detail: posting.detail.clone(),
-            assets,
-        };
-        debug!("Posting found and hydrated: {:?}", posting_id);
-        HttpResponse::Ok().json(response)
-    } else {
-        error!("Posting not found: {:?}", posting_id);
-        HttpResponse::NotFound().body("Posting not found")
+            let response = PostingResponse {
+                id: posting.id,
+                judul: posting.judul.clone(),
+                tanggal: posting.tanggal,
+                detail: posting.detail.clone(),
+                assets,
+            };
+            info!("Successfully hydrated posting response for ID: {:?}", posting_id);
+            HttpResponse::Ok().json(response)
+        },
+        Ok(None) => {
+            error!("Posting not found in database for ID: {:?}", posting_id);
+            HttpResponse::NotFound().json(ErrorResponse::not_found(&format!("Posting with ID {:?} not found", posting_id)))
+        },
+        Err(e) => {
+            error!("Failed to get posting by ID '{}' from database: {}", posting_id, e);
+            HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to retrieve posting"))
+        }
     }
 }
 
@@ -109,39 +133,54 @@ pub async fn get_posting_by_id(
 )]
 pub async fn create_posting(
     req: web::Json<CreatePostingRequest>,
-    data: web::Data<SharedAppState>,
+    data: web::Data<AppState>,
 ) -> impl Responder {
-    info!("Attempting to create a new posting");
-    let assets_map = data.assets.read();
+    info!("Executing create_posting handler");
     let asset_ids = req.asset_ids.clone().unwrap_or_default();
+    debug!("Received request to create posting with {} asset IDs.", asset_ids.len());
 
-    // Validate that all provided asset IDs exist
     for id in &asset_ids {
-        if !assets_map.contains_key(id) {
-            let msg = format!("Asset with ID {:?} not found", id);
-            error!("{}", &msg);
-            return HttpResponse::BadRequest().body(msg);
+        debug!("Validating asset with ID: {:?}", id);
+        match data.get_item::<Asset>("assets", id) {
+            Ok(Some(_)) => {
+                debug!("Asset validation successful for ID: {:?}", id);
+            },
+            Ok(None) => {
+                let msg = format!("Asset with ID {:?} not found", id);
+                error!("Asset validation failed: {}", &msg);
+                return HttpResponse::BadRequest().json(ErrorResponse::bad_request(&msg));
+            },
+            Err(e) => {
+                error!("Database error during asset validation for ID {:?}: {}", id, e);
+                return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to validate asset"));
+            }
         }
     }
+    info!("All assets validated successfully.");
 
-    let mut postings = data.postings.write();
-    let new_id = Uuid(::uuid::Uuid::new_v4());
-    let current_date = NaiveDate(::chrono::Utc::now().date_naive());
+    let new_id = ::uuid::Uuid::new_v4();
+    let current_date = ::chrono::Utc::now().date_naive();
+    debug!("Generated new posting ID: {:?} and date: {}", new_id, current_date);
 
     let new_posting = Posting {
         id: new_id,
         judul: req.judul.clone(),
         tanggal: current_date,
         detail: req.detail.clone(),
-        asset_ids,
+        asset_ids: asset_ids.clone(),
     };
 
-    postings.insert(new_id, new_posting.clone());
-    info!("New posting created with id: {:?}", new_id);
+    debug!("Attempting to insert new posting into 'postings' column family.");
+    if let Err(e) = data.insert_item("postings", &new_id, &new_posting) {
+        error!("Failed to insert new posting into database: {}", e);
+        return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to create posting"));
+    }
+    
+    info!("New posting created successfully with ID: {:?}", new_id);
 
-    // Construct and return the hydrated response
-    let assets: Vec<Asset> = new_posting.asset_ids.iter()
-        .filter_map(|id| assets_map.get(id).cloned())
+    debug!("Hydrating response for new posting.");
+    let assets: Vec<Asset> = asset_ids.iter()
+        .filter_map(|id| data.get_item::<Asset>("assets", id).unwrap_or(None))
         .collect();
     
     let response = PostingResponse {
@@ -174,51 +213,72 @@ pub async fn create_posting(
 pub async fn update_posting(
     id: Path<Uuid>,
     req: web::Json<UpdatePostingRequest>,
-    data: web::Data<SharedAppState>,
+    data: web::Data<AppState>,
 ) -> impl Responder {
     let posting_id = id.into_inner();
-    info!("Attempting to update posting with id: {:?}", posting_id);
-    let mut postings = data.postings.write();
+    info!("Executing update_posting handler for ID: {:?}", posting_id);
 
-    if let Some(posting) = postings.get_mut(&posting_id) {
-        if let Some(judul) = &req.judul {
-            debug!("Updating posting title for id: {:?}", posting_id);
-            posting.judul = judul.clone();
-        }
-        if let Some(detail) = &req.detail {
-            debug!("Updating posting detail for id: {:?}", posting_id);
-            posting.detail = detail.clone();
-        }
-        if let Some(asset_ids) = &req.asset_ids {
-            let assets_map = data.assets.read();
-            for id in asset_ids {
-                if !assets_map.contains_key(id) {
-                    let msg = format!("Asset with ID {:?} not found", id);
-                    error!("{}", &msg);
-                    return HttpResponse::BadRequest().body(msg);
-                }
+    debug!("Attempting to fetch posting with ID {:?} for update.", posting_id);
+    match data.get_item::<Posting>("postings", &posting_id) {
+        Ok(Some(mut posting)) => {
+            info!("Found posting with ID {:?}. Proceeding with update.", posting_id);
+            if let Some(judul) = &req.judul {
+                debug!("Updating posting title for id: {:?}", posting_id);
+                posting.judul = judul.clone();
             }
-            debug!("Updating posting asset IDs for id: {:?}", posting_id);
-            posting.asset_ids = asset_ids.clone();
+            if let Some(detail) = &req.detail {
+                debug!("Updating posting detail for id: {:?}", posting_id);
+                posting.detail = detail.clone();
+            }
+            if let Some(asset_ids) = &req.asset_ids {
+                debug!("Validating asset IDs for update.");
+                for id in asset_ids {
+                    match data.get_item::<Asset>("assets", id) {
+                        Ok(Some(_)) => (),
+                        Ok(None) => {
+                            let msg = format!("Asset with ID {:?} not found", id);
+                            error!("Asset validation failed during update: {}", &msg);
+                            return HttpResponse::BadRequest().json(ErrorResponse::bad_request(&msg));
+                        },
+                        Err(e) => {
+                            error!("Database error during asset validation for ID {:?}: {}", id, e);
+                            return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to validate asset"));
+                        }
+                    }
+                }
+                debug!("Updating posting asset IDs for id: {:?}", posting_id);
+                posting.asset_ids = asset_ids.clone();
+            }
+
+            debug!("Attempting to insert updated posting with ID {:?} into database.", posting_id);
+            if let Err(e) = data.insert_item("postings", &posting_id, &posting) {
+                error!("Failed to update posting in database: {}", e);
+                return HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to update posting"));
+            }
+
+            debug!("Hydrating response for updated posting.");
+            let assets: Vec<Asset> = posting.asset_ids.iter()
+                .filter_map(|id| data.get_item::<Asset>("assets", id).unwrap_or(None))
+                .collect();
+
+            let response = PostingResponse {
+                id: posting.id,
+                judul: posting.judul.clone(),
+                tanggal: posting.tanggal,
+                detail: posting.detail.clone(),
+                assets,
+            };
+            info!("Posting with id: {:?} updated successfully", posting_id);
+            HttpResponse::Ok().json(response)
+        },
+        Ok(None) => {
+            error!("Posting not found for update: {:?}", posting_id);
+            HttpResponse::NotFound().json(ErrorResponse::not_found(&format!("Posting with ID {:?} not found", posting_id)))
+        },
+        Err(e) => {
+            error!("Failed to retrieve posting for update from database: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to retrieve posting for update"))
         }
-
-        let assets_map = data.assets.read();
-        let assets: Vec<Asset> = posting.asset_ids.iter()
-            .filter_map(|id| assets_map.get(id).cloned())
-            .collect();
-
-        let response = PostingResponse {
-            id: posting.id,
-            judul: posting.judul.clone(),
-            tanggal: posting.tanggal,
-            detail: posting.detail.clone(),
-            assets,
-        };
-        info!("Posting with id: {:?} updated successfully", posting_id);
-        HttpResponse::Ok().json(response)
-    } else {
-        error!("Posting not found for update: {:?}", posting_id);
-        HttpResponse::NotFound().body("Posting not found")
     }
 }
 
@@ -238,16 +298,20 @@ pub async fn update_posting(
 )]
 pub async fn delete_posting(
     id: Path<Uuid>,
-    data: web::Data<SharedAppState>,
+    data: web::Data<AppState>,
 ) -> impl Responder {
     let posting_id = id.into_inner();
-    info!("Attempting to delete posting with id: {:?}", posting_id);
-    let mut postings = data.postings.write();
-    if postings.remove(&posting_id).is_some() {
-        info!("Posting with id: {:?} deleted successfully", posting_id);
-        HttpResponse::NoContent().finish()
-    } else {
-        error!("Posting not found for deletion: {:?}", posting_id);
-        HttpResponse::NotFound().body("Posting not found")
+    info!("Executing delete_posting handler for ID: {:?}", posting_id);
+    
+    debug!("Attempting to delete posting with ID {:?} from database.", posting_id);
+    match data.delete_item("postings", &posting_id) {
+        Ok(_) => {
+            info!("Posting with id: {:?} deleted successfully from database.", posting_id);
+            HttpResponse::NoContent().finish()
+        },
+        Err(e) => {
+            error!("Failed to delete posting with ID {:?} from database: {}", posting_id, e);
+            HttpResponse::InternalServerError().json(ErrorResponse::internal_error("Failed to delete posting"))
+        }
     }
 }

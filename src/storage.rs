@@ -22,22 +22,55 @@ pub struct FolderContent {
 }
 
 pub fn create_folder(folder_name: &str) -> std::io::Result<()> {
+    // Security check to prevent directory traversal
+    if folder_name.contains("..") || folder_name.starts_with('/') || folder_name.contains("//") {
+        use std::io::{Error, ErrorKind};
+        return Err(Error::new(ErrorKind::InvalidInput, "Invalid folder name"));
+    }
+    
     let folder_path = Path::new(ASSETS_DIR).join(folder_name);
     info!("Creating folder at: {:?}", folder_path);
-    fs::create_dir_all(folder_path)
+    
+    // Ensure the path is within the ASSETS_DIR to prevent directory traversal
+    let canonical_folder_path = folder_path.canonicalize()
+        .unwrap_or_else(|_| folder_path.clone());
+    let canonical_assets_dir = Path::new(ASSETS_DIR).canonicalize()?;
+    
+    if !canonical_folder_path.starts_with(&canonical_assets_dir) {
+        use std::io::{Error, ErrorKind};
+        return Err(Error::new(ErrorKind::InvalidInput, "Folder path outside allowed directory"));
+    }
+    
+    fs::create_dir_all(canonical_folder_path)
 }
 
 pub fn list_folder_contents(folder_name: &str) -> std::io::Result<Vec<FolderContent>> {
+    // Additional security check in the storage layer
+    if folder_name.contains("..") || folder_name.starts_with('/') || folder_name.contains("//") {
+        use std::io::{Error, ErrorKind};
+        return Err(Error::new(ErrorKind::InvalidInput, "Invalid folder name"));
+    }
+    
     let folder_path = Path::new(ASSETS_DIR).join(folder_name);
     debug!("Listing contents of folder: {:?}", folder_path);
+    
+    // Ensure the path is within the ASSETS_DIR to prevent directory traversal
+    let canonical_folder_path = folder_path.canonicalize()?;
+    let canonical_assets_dir = Path::new(ASSETS_DIR).canonicalize()?;
+    
+    if !canonical_folder_path.starts_with(&canonical_assets_dir) {
+        use std::io::{Error, ErrorKind};
+        return Err(Error::new(ErrorKind::InvalidInput, "Folder path outside allowed directory"));
+    }
+    
     let mut contents = Vec::new();
 
-    for entry in fs::read_dir(folder_path)? {
+    for entry in fs::read_dir(canonical_folder_path)? {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name().into_string().unwrap_or_default();
         let is_dir = path.is_dir();
-        let relative_path = path.strip_prefix(ASSETS_DIR).unwrap().to_str().unwrap_or_default();
+        let relative_path = path.strip_prefix(&canonical_assets_dir).unwrap().to_str().unwrap_or_default();
 
         contents.push(FolderContent {
             name,
