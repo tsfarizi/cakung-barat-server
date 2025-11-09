@@ -105,6 +105,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         let cors = Cors::default()
+            .allowed_origin("https://cakung-barat-server-1065513777845.asia-southeast1.run.app")
             .allowed_origin("https://tsfarizi.github.io")
             .allowed_origin("http://localhost:5173")
             .allowed_origin("http://localhost:3000")
