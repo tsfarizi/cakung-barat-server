@@ -84,11 +84,12 @@ pub fn list_folder_contents(folder_name: &str) -> std::io::Result<Vec<FolderCont
 
 pub async fn save_file(
     mut payload: actix_multipart::Multipart,
-) -> Result<(String, Option<Uuid>, Vec<String>), String> {
+) -> Result<(String, Option<Uuid>, Vec<String>, Option<String>), String> {
     let mut filename: Option<String> = None;
     let mut posting_id: Option<Uuid> = None;
     let mut folders: Vec<String> = Vec::new();
     let mut file_data: Option<Vec<u8>> = None;
+    let mut asset_name: Option<String> = None;
 
     while let Some(field) = payload.next().await {
         let mut field = field.map_err(|e| e.to_string())?;
@@ -132,6 +133,15 @@ pub async fn save_file(
                 if let Ok(folder_str) = String::from_utf8(bytes) {
                     folders.push(folder_str);
                 }
+            },
+            "name" => {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.next().await {
+                    bytes.extend_from_slice(&chunk.unwrap());
+                }
+                if let Ok(name_str) = String::from_utf8(bytes) {
+                    asset_name = Some(name_str);
+                }
             }
             _ => (),
         }
@@ -142,7 +152,7 @@ pub async fn save_file(
         info!("Saving file to: {:?}", file_path);
         let mut f = web::block(move || fs::File::create(file_path)).await.unwrap().unwrap();
         web::block(move || f.write_all(&data)).await.unwrap().unwrap();
-        Ok((fname, posting_id, folders))
+        Ok((fname, posting_id, folders, asset_name))
     } else {
         error!("Invalid multipart payload. File data or filename missing.");
         Err("Invalid multipart payload".to_string())

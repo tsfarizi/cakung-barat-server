@@ -6,6 +6,8 @@ use uuid::Uuid;
 pub struct Asset {
     #[schema(example = "a1b2c3d4-e5f6-7890-1234-567890abcdef")]
     pub id: Uuid,
+    #[schema(example = "My Cool Image")]
+    pub name: String,
     #[schema(example = "image.png")]
     pub filename: String,
     #[schema(example = "https://example.com/assets/image.png")]

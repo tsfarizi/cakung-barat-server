@@ -46,12 +46,14 @@ pub async fn upload_asset(
     info!("Executing upload_asset handler");
     debug!("Attempting to save file from multipart payload.");
     match storage::save_file(payload).await {
-        Ok((filename, posting_id_opt, folder_names)) => {
+        Ok((filename, posting_id_opt, folder_names, asset_name)) => {
             info!("File saved successfully with filename: {}", filename);
             let asset_id = Uuid::new_v4();
             debug!("Generated new asset ID: {:?}", asset_id);
+            let name = asset_name.unwrap_or_else(|| filename.clone());
             let new_asset = Asset {
                 id: asset_id,
+                name,
                 filename: filename.clone(),
                 url: format!("/assets/serve/{}", filename),
                 description: None,
@@ -383,10 +385,12 @@ pub struct UploadAssetRequest {
     #[allow(unused)]
     pub file: Vec<u8>,
     #[allow(unused)]
-    #[schema(value_type = String)]
+    #[schema(value_type = String, nullable = true)]
     pub posting_id: Option<Uuid>,
     #[allow(unused)]
     pub folders: Option<Vec<String>>,
+    #[allow(unused)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
