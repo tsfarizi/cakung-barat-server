@@ -2,6 +2,8 @@ use std::sync::Arc;
 use rocksdb::{DB, Options, ColumnFamilyDescriptor};
 use uuid::Uuid;
 use serde::{Serialize, de::DeserializeOwned};
+use dotenvy::dotenv;
+use std::env;
 
 pub struct AppState {
     pub db: Arc<DB>,
@@ -9,7 +11,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let path = ".data/database";
+        dotenv().ok();
+        let path = env::var("DATABASE_URL").expect("DATABASE_URL must be set in .env");
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
