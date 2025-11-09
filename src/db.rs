@@ -12,7 +12,10 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         dotenv().ok();
-        let path = env::var("DATABASE_URL").expect("DATABASE_URL must be set in .env");
+        let path = env::var("DATABASE_URL").unwrap_or_else(|_| {
+            eprintln!("DATABASE_URL not set in .env or environment, using default path: /data/database");
+            String::from("/data/database")
+        });
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
