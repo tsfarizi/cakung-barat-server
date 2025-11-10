@@ -317,11 +317,11 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
     let mut folders_with_assets: Vec<FolderWithAssets> = Vec::new();
 
     debug!("Fetching all folders and their asset associations.");
-    // Get all folder-asset associations
+    // Use a LEFT JOIN to include folders that are empty
     let folder_asset_query = "
         SELECT f.name, af.asset_id 
         FROM folders f 
-        JOIN asset_folders af ON f.id = af.folder_id
+        LEFT JOIN asset_folders af ON f.id = af.folder_id
     ";
     
     match data.client.query(folder_asset_query, &[]).await {
@@ -330,9 +330,16 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
             
             for row in rows {
                 let folder_name: String = row.get(0);
-                let asset_id: Uuid = row.get(1);
-                folder_assets_map.entry(folder_name).or_insert_with(Vec::new).push(asset_id);
-                asset_ids_in_folders.insert(asset_id);
+                // asset_id can be NULL for empty folders, so we read it as an Option
+                let asset_id: Option<Uuid> = row.get(1);
+                
+                if let Some(id) = asset_id {
+                    folder_assets_map.entry(folder_name).or_default().push(id);
+                    asset_ids_in_folders.insert(id);
+                } else {
+                    // This ensures the folder exists in the map even if it's empty
+                    folder_assets_map.entry(folder_name).or_default();
+                }
             }
             
             for (folder_name, asset_ids) in folder_assets_map {
@@ -479,15 +486,18 @@ pub async fn create_folder_handler(
     get,
     path = "/assets/folders/{folder_name}",
     params(
-        ("folder_name" = String, Path, description = "Name of the folder to list contents")
+        ("folder_name" = String, Path, description = "Name of the folder to list asset details from")
     ),
     responses(
-        (status = 200, description = "Folder contents listed successfully", body = Vec<FolderContent>),
+        (status = 200, description = "A list of assets in the folder", body = Vec<Asset>),
         (status = 404, description = "Folder not found", body = ErrorResponse),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
 )]
-pub async fn list_folder_handler(folder_name: Path<String>) -> impl Responder {
+pub async fn list_folder_handler(
+    folder_name: Path<String>,
+    data: web::Data<AppState>,
+) -> impl Responder {
     let folder_name = folder_name.into_inner();
     info!("Executing list_folder_handler for folder: {}", &folder_name);
 
@@ -497,33 +507,49 @@ pub async fn list_folder_handler(folder_name: Path<String>) -> impl Responder {
             .json(ErrorResponse::bad_request("Folder name cannot be empty"));
     }
 
-    if folder_name.contains("..") || folder_name.starts_with('/') || folder_name.contains("//") {
-        error!("Invalid folder name provided: {}", &folder_name);
-        return HttpResponse::BadRequest().json(ErrorResponse::bad_request("Invalid folder name"));
-    }
-
     debug!(
-        "Attempting to list contents of folder '{}' from Supabase storage.",
+        "Attempting to get asset IDs for folder '{}' from database.",
         &folder_name
     );
-    match storage::list_folder_contents(&folder_name).await {
-        Ok(contents) => {
+    match data.get_folder_contents(&folder_name).await {
+        Ok(Some(asset_ids)) => {
+            let mut assets = Vec::new();
+            for asset_id in asset_ids {
+                match data.get_item::<Asset>("assets", &asset_id).await {
+                    Ok(Some(asset)) => assets.push(asset),
+                    Ok(None) => {
+                        error!("Asset with ID {} found in folder but not in assets table.", asset_id);
+                        // This indicates a data inconsistency, but we'll skip it for now.
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch asset {}: {}", asset_id, e);
+                        return HttpResponse::InternalServerError().json(
+                            ErrorResponse::internal_error("Failed to retrieve asset details"),
+                        );
+                    }
+                }
+            }
             info!(
-                "Successfully listed {} items in folder '{}'",
-                contents.len(),
+                "Successfully fetched {} assets for folder '{}'",
+                assets.len(),
                 &folder_name
             );
-            HttpResponse::Ok().json(contents)
+            HttpResponse::Ok().json(assets)
         }
-        Err(e) => {
-            error!(
-                "Failed to list folder contents for '{}': {}",
-                &folder_name, e
-            );
+        Ok(None) => {
+            error!("Folder not found in database: {}", &folder_name);
             HttpResponse::NotFound().json(ErrorResponse::not_found(&format!(
                 "Folder '{}' not found",
                 folder_name
             )))
+        }
+        Err(e) => {
+            error!(
+                "Failed to get folder contents for '{}': {}",
+                &folder_name, e
+            );
+            HttpResponse::InternalServerError()
+                .json(ErrorResponse::internal_error("Failed to retrieve folder contents"))
         }
     }
 }

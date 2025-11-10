@@ -226,14 +226,17 @@ pub async fn list_folder_contents(folder_name: &str) -> Result<Vec<FolderContent
     // Construct the list URL - get all files in a "folder" by prefix
     let list_url = format!("{}/storage/v1/object/list/{}", supabase_url, bucket_name);
     
-    // Using query parameters to filter by folder prefix
-    let params = [("prefix", folder_name)];
+    // Correctly build the JSON object for the request body
+    let body = serde_json::json!({
+        "prefix": folder_name,
+        "limit": 100 // It's good practice to add a limit
+    });
     
     let response = client
         .post(&list_url)
         .header("Authorization", format!("Bearer {}", supabase_anon_key))
         .header("apikey", &supabase_anon_key)
-        .json(&params)
+        .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -244,17 +247,25 @@ pub async fn list_folder_contents(folder_name: &str) -> Result<Vec<FolderContent
         
         let mut contents = Vec::new();
         for file in files {
-            if let (Some(name), Some(size)) = (file.get("name"), file.get("size")) {
+            if let Some(name) = file.get("name") {
+                // In Supabase storage, everything is a file, but we can represent folders
+                // by checking if the object has a null size or specific metadata if available.
+                // For simplicity, we'll treat everything as a file for now.
+                let is_file = file.get("id").is_some(); // A simple heuristic: if it has an id, it's an object.
+                let size = file.get("metadata").and_then(|m| m.get("size")).and_then(|s| s.as_u64());
+
                 contents.push(FolderContent {
                     name: name.as_str().unwrap_or("").to_string(),
-                    is_file: true, // In Supabase storage, everything is a file
-                    size: size.as_u64(),
+                    is_file,
+                    size,
                 });
             }
         }
         
         Ok(contents)
     } else {
-        Err(format!("List failed with status: {}", response.status()))
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        Err(format!("List failed with status {}: {}", status, error_text))
     }
 }
