@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct Asset {
@@ -14,4 +15,20 @@ pub struct Asset {
     pub url: String,
     #[schema(example = "This is an example image asset.")]
     pub description: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl Asset {
+    pub fn new(name: String, filename: String, url: String, description: Option<String>) -> Self {
+        Asset {
+            id: Uuid::new_v4(),
+            name,
+            filename,
+            url,
+            description,
+            created_at: Some(Utc::now()),
+            updated_at: Some(Utc::now()),
+        }
+    }
 }

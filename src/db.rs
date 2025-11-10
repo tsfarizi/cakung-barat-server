@@ -1,87 +1,241 @@
-use std::sync::Arc;
-use rocksdb::{DB, Options, ColumnFamilyDescriptor};
-use uuid::Uuid;
-use serde::{Serialize, de::DeserializeOwned};
 use dotenvy::dotenv;
+use serde::{Serialize, de::DeserializeOwned};
 use std::env;
+use std::sync::Arc;
+use tokio_postgres::NoTls;
+use uuid::Uuid;
+use serde_json::Value;
 
 pub struct AppState {
-    pub db: Arc<DB>,
+    pub client: Arc<tokio_postgres::Client>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         dotenv().ok();
-        let path = env::var("DATABASE_URL").unwrap_or_else(|_| {
-            eprintln!("DATABASE_URL not set in .env or environment, using default path: /data/database");
-            String::from("/data/database")
-        });
-        let mut db_opts = Options::default();
-        db_opts.create_if_missing(true);
-        db_opts.create_missing_column_families(true);
+        
+        let database_url = env::var("SUPABASE_DATABASE_URL")
+            .unwrap_or_else(|_| panic!("SUPABASE_DATABASE_URL must be set"));
 
-        let postings_cf = ColumnFamilyDescriptor::new("postings", Options::default());
-        let assets_cf = ColumnFamilyDescriptor::new("assets", Options::default());
-        let folders_cf = ColumnFamilyDescriptor::new("folders", Options::default());
-
-        let db = DB::open_cf_descriptors(&db_opts, path, vec![postings_cf, assets_cf, folders_cf]).unwrap();
-
-        AppState {
-            db: Arc::new(db),
-        }
-    }
-
-    pub fn get_item<T: DeserializeOwned>(&self, cf_name: &str, key: &Uuid) -> Result<Option<T>, rocksdb::Error> {
-        let cf = self.db.cf_handle(cf_name).unwrap();
-        let key_bytes = key.to_string();
-        match self.db.get_cf(&cf, key_bytes.as_bytes())? {
-            Some(value) => {
-                let item: T = serde_json::from_slice(&value).unwrap();
-                Ok(Some(item))
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls).await?;
+        
+        // Spawn the connection to run in the background
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("Database connection error: {}", e);
             }
-            None => Ok(None),
+        });
+
+        Ok(AppState {
+            client: Arc::new(client),
+        })
+    }
+
+    pub async fn get_item<T: DeserializeOwned>(
+        &self,
+        table_name: &str,
+        key: &Uuid,
+    ) -> Result<Option<T>, Box<dyn std::error::Error>> {
+        let query = format!("SELECT * FROM {} WHERE id = $1", table_name);
+        let rows = self.client.query(&query, &[key]).await?;
+        
+        if let Some(row) = rows.get(0) {
+            // Convert the row to JSON and then deserialize to the target type
+            let json_value = row_to_json(row);
+            let item: T = serde_json::from_value(json_value)?;
+            Ok(Some(item))
+        } else {
+            Ok(None)
         }
     }
 
-    pub fn get_all_items<T: DeserializeOwned>(&self, cf_name: &str) -> Result<Vec<T>, rocksdb::Error> {
-        let cf = self.db.cf_handle(cf_name).unwrap();
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+    pub async fn get_all_items<T: DeserializeOwned>(
+        &self,
+        table_name: &str,
+    ) -> Result<Vec<T>, Box<dyn std::error::Error>> {
+        let query = format!("SELECT * FROM {}", table_name);
+        let rows = self.client.query(&query, &[]).await?;
+        
         let mut items = Vec::new();
-        for item in iter {
-            let (_key, value) = item.unwrap();
-            let item: T = serde_json::from_slice(&value).unwrap();
+        for row in rows {
+            let json_value = row_to_json(&row);
+            let item: T = serde_json::from_value(json_value)?;
             items.push(item);
         }
+        
         Ok(items)
     }
 
-    pub fn insert_item<T: Serialize>(&self, cf_name: &str, key: &Uuid, item: &T) -> Result<(), rocksdb::Error> {
-        let cf = self.db.cf_handle(cf_name).unwrap();
-        let key_bytes = key.to_string();
-        let value = serde_json::to_vec(item).unwrap();
-        self.db.put_cf(&cf, key_bytes.as_bytes(), value)
-    }
-
-    pub fn delete_item(&self, cf_name: &str, key: &Uuid) -> Result<(), rocksdb::Error> {
-        let cf = self.db.cf_handle(cf_name).unwrap();
-        let key_bytes = key.to_string();
-        self.db.delete_cf(&cf, key_bytes.as_bytes())
-    }
-
-    pub fn get_folder_contents(&self, folder_name: &str) -> Result<Option<Vec<Uuid>>, rocksdb::Error> {
-        let cf = self.db.cf_handle("folders").unwrap();
-        match self.db.get_cf(&cf, folder_name.as_bytes())? {
-            Some(value) => {
-                let item: Vec<Uuid> = serde_json::from_slice(&value).unwrap();
-                Ok(Some(item))
+    pub async fn insert_item<T: Serialize>(
+        &self,
+        table_name: &str,
+        _key: &Uuid,  // Note: This parameter is not used, but kept for API compatibility
+        item: &T,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json_value = serde_json::to_value(item)?;
+        
+        // Create dynamic INSERT query based on the table
+        let query = match table_name {
+            "assets" => {
+                "INSERT INTO assets (id, name, filename, url, description, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) ON CONFLICT (id) DO UPDATE SET name = $2, filename = $3, url = $4, description = $5, updated_at = NOW()"
+            },
+            "postings" => {
+                "INSERT INTO postings (id, judul, tanggal, detail, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW(), NOW()) ON CONFLICT (id) DO UPDATE SET judul = $2, tanggal = $3, detail = $4, updated_at = NOW()"
+            },
+            _ => {
+                return Err("Unsupported table for insert_item".into());
             }
-            None => Ok(None),
+        };
+        
+        match table_name {
+            "assets" => {
+                let asset: crate::asset::models::Asset = serde_json::from_value(json_value)?;
+                self.client.execute(
+                    query,
+                    &[&asset.id, &asset.name, &asset.filename, &asset.url, &asset.description.as_ref().map(|s| s.as_str())],
+                ).await?;
+            },
+            "postings" => {
+                let posting: crate::posting::models::Posting = serde_json::from_value(json_value)?;
+                self.client.execute(
+                    query,
+                    &[&posting.id, &posting.judul, &posting.tanggal, &posting.detail],
+                ).await?;
+            },
+            _ => {
+                return Err("Unsupported table for insert_item".into());
+            }
+        };
+        
+        Ok(())
+    }
+
+    pub async fn delete_item(
+        &self,
+        table_name: &str,
+        key: &Uuid,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let query = format!("DELETE FROM {} WHERE id = $1", table_name);
+        self.client.execute(&query, &[key]).await?;
+        Ok(())
+    }
+
+    pub async fn get_folder_contents(
+        &self,
+        folder_name: &str,
+    ) -> Result<Option<Vec<Uuid>>, Box<dyn std::error::Error>> {
+        // Get folder ID first
+        let folder_query = "SELECT id FROM folders WHERE name = $1";
+        let folder_rows = self.client.query(folder_query, &[&folder_name]).await?;
+        
+        if let Some(folder_row) = folder_rows.get(0) {
+            let folder_id: Uuid = folder_row.get(0);
+            
+            // Get all asset IDs associated with this folder
+            let asset_query = "SELECT asset_id FROM asset_folders WHERE folder_id = $1";
+            let asset_rows = self.client.query(asset_query, &[&folder_id]).await?;
+            
+            let mut asset_ids = Vec::new();
+            for row in asset_rows {
+                let asset_id: Uuid = row.get(0);
+                asset_ids.push(asset_id);
+            }
+            
+            Ok(Some(asset_ids))
+        } else {
+            Ok(None) // Folder doesn't exist
         }
     }
 
-    pub fn insert_folder_contents(&self, folder_name: &str, contents: &Vec<Uuid>) -> Result<(), rocksdb::Error> {
-        let cf = self.db.cf_handle("folders").unwrap();
-        let value = serde_json::to_vec(contents).unwrap();
-        self.db.put_cf(&cf, folder_name.as_bytes(), value)
+    pub async fn insert_folder_contents(
+        &self,
+        folder_name: &str,
+        contents: &Vec<Uuid>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Get or create the folder
+        let folder_query = "INSERT INTO folders (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = $1 RETURNING id";
+        let folder_row = self.client.query_one(folder_query, &[&folder_name]).await?;
+        let folder_id: Uuid = folder_row.get(0);
+        
+        // Clear existing associations for this folder
+        let delete_query = "DELETE FROM asset_folders WHERE folder_id = $1";
+        self.client.execute(delete_query, &[&folder_id]).await?;
+        
+        // Insert new associations
+        for asset_id in contents {
+            let insert_query = "INSERT INTO asset_folders (folder_id, asset_id) VALUES ($1, $2)";
+            self.client.execute(insert_query, &[&folder_id, asset_id]).await?;
+        }
+        
+        Ok(())
     }
+}
+
+// Helper function to convert a row to JSON
+fn row_to_json(row: &tokio_postgres::Row) -> Value {
+    let mut map = serde_json::Map::new();
+    
+    for (idx, column) in row.columns().iter().enumerate() {
+        // Handle each column type individually
+        let column_name = column.name();
+        let value: Value = match column.type_().name() {
+            "uuid" => {
+                let uuid_value: Uuid = row.get(idx);
+                Value::String(uuid_value.to_string())
+            },
+            "text" | "varchar" => {
+                let opt_value: Option<String> = row.get(idx);
+                match opt_value {
+                    Some(s) => Value::String(s),
+                    None => Value::Null,
+                }
+            },
+            "int4" => {
+                let opt_value: Option<i32> = row.get(idx);
+                match opt_value {
+                    Some(n) => Value::Number(n.into()),
+                    None => Value::Null,
+                }
+            },
+            "int8" => {
+                let opt_value: Option<i64> = row.get(idx);
+                match opt_value {
+                    Some(n) => Value::Number(serde_json::Number::from(n)),
+                    None => Value::Null,
+                }
+            },
+            "bool" => {
+                let opt_value: Option<bool> = row.get(idx);
+                match opt_value {
+                    Some(b) => Value::Bool(b),
+                    None => Value::Null,
+                }
+            },
+            "timestamptz" | "timestamp" => {
+                let opt_value: Option<chrono::DateTime<chrono::Utc>> = row.get(idx);
+                match opt_value {
+                    Some(dt) => Value::String(dt.to_rfc3339()),
+                    None => Value::Null,
+                }
+            },
+            "date" => {
+                let opt_value: Option<chrono::NaiveDate> = row.get(idx);
+                match opt_value {
+                    Some(d) => Value::String(d.to_string()),
+                    None => Value::Null,
+                }
+            },
+            _ => {
+                // For other types, try to get as a generic value
+                let opt_str: Option<String> = row.get(idx);
+                match opt_str {
+                    Some(s) => Value::String(s),
+                    None => Value::Null,
+                }
+            }
+        };
+        map.insert(column_name.to_string(), value);
+    }
+    
+    Value::Object(map)
 }

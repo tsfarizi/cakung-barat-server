@@ -1,15 +1,15 @@
 use actix_cors::Cors;
-use actix_web::{http::header, web, App, HttpServer};
+use actix_web::{App, HttpServer, http::header, web};
+use chrono;
+use serde::Serialize;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
-use serde::Serialize;
-use chrono;
 
-mod db;
-mod storage;
-mod posting;
 mod asset;
+mod db;
+mod posting;
 mod schema;
+mod storage;
 
 use crate::db::AppState;
 
@@ -44,7 +44,9 @@ impl ErrorResponse {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    unsafe { std::env::set_var("RUST_LOG", "info"); }
+    unsafe {
+        std::env::set_var("RUST_LOG", "info");
+    }
     env_logger::init();
 
     #[derive(ToSchema)]
@@ -54,6 +56,10 @@ async fn main() -> std::io::Result<()> {
     #[derive(ToSchema)]
     #[schema(value_type = String)]
     struct NaiveDate;
+
+    #[derive(ToSchema)]
+    #[schema(value_type = String)]
+    struct DateTime;
 
     #[derive(OpenApi)]
     #[openapi(
@@ -84,7 +90,8 @@ async fn main() -> std::io::Result<()> {
                 storage::FolderContent,
                 ErrorResponse,
                 Uuid,
-                NaiveDate
+                NaiveDate,
+                DateTime
             )
         ),
         tags(
@@ -99,11 +106,12 @@ async fn main() -> std::io::Result<()> {
     )]
     struct ApiDoc;
 
-    let app_state = web::Data::new(AppState::new());
+    let app_state = web::Data::new(AppState::new().await.unwrap());
 
     log::info!("Starting server at http://0.0.0.0:8080");
 
     HttpServer::new(move || {
+        let app_state = app_state.clone(); // Clone the app_state for each thread
         let cors = Cors::default()
             .allowed_origin("https://cakung-barat-server-1065513777845.asia-southeast1.run.app")
             .allowed_origin("https://tsfarizi.github.io")
@@ -122,29 +130,43 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(cors)
-            .app_data(app_state.clone())
+            .app_data(app_state)
             .service(
                 web::scope("/api")
-                    .service(web::resource("/postings")
-                        .route(web::get().to(posting::handlers::get_all_postings))
-                        .route(web::post().to(posting::handlers::create_posting)))
-                    .service(web::resource("/postings/{id}")
-                        .route(web::get().to(posting::handlers::get_posting_by_id))
-                        .route(web::put().to(posting::handlers::update_posting))
-                        .route(web::delete().to(posting::handlers::delete_posting)))
-                    .service(web::resource("/assets")
-                        .route(web::get().to(asset::handlers::get_all_assets_structured))
-                        .route(web::post().to(asset::handlers::upload_asset)))
-                    .service(web::resource("/assets/folders")
-                        .route(web::post().to(asset::handlers::create_folder_handler)))
-                    .service(web::resource("/assets/folders/{folder_name:.*}")
-                        .route(web::get().to(asset::handlers::list_folder_handler)))
-                    .service(web::resource("/assets/{id}")
-                        .route(web::get().to(asset::handlers::get_asset_by_id))
-                        .route(web::delete().to(asset::handlers::delete_asset)))
+                    .service(
+                        web::resource("/postings")
+                            .route(web::get().to(posting::handlers::get_all_postings))
+                            .route(web::post().to(posting::handlers::create_posting)),
+                    )
+                    .service(
+                        web::resource("/postings/{id}")
+                            .route(web::get().to(posting::handlers::get_posting_by_id))
+                            .route(web::put().to(posting::handlers::update_posting))
+                            .route(web::delete().to(posting::handlers::delete_posting)),
+                    )
+                    .service(
+                        web::resource("/assets")
+                            .route(web::get().to(asset::handlers::get_all_assets_structured))
+                            .route(web::post().to(asset::handlers::upload_asset)),
+                    )
+                    .service(
+                        web::resource("/assets/folders")
+                            .route(web::post().to(asset::handlers::create_folder_handler)),
+                    )
+                    .service(
+                        web::resource("/assets/folders/{folder_name:.*}")
+                            .route(web::get().to(asset::handlers::list_folder_handler)),
+                    )
+                    .service(
+                        web::resource("/assets/{id}")
+                            .route(web::get().to(asset::handlers::get_asset_by_id))
+                            .route(web::delete().to(asset::handlers::delete_asset)),
+                    ),
             )
-            .service(web::resource("/assets/serve/{filename:.*}")
-                .route(web::get().to(asset::handlers::serve_asset)))
+            .service(
+                web::resource("/assets/serve/{filename:.*}")
+                    .route(web::get().to(asset::handlers::serve_asset)),
+            )
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")
                     .url("/api-doc/openapi.json", ApiDoc::openapi()),
