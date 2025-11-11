@@ -136,6 +136,41 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn upsert_posting_with_assets(
+        &self,
+        posting: &crate::posting::models::Posting,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        log::debug!("Attempting to upsert posting with ID: {} and {} assets", posting.id, posting.asset_ids.len());
+        
+        // Insert or update the posting in the postings table
+        let query = "INSERT INTO postings (id, judul, tanggal, detail, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO UPDATE SET judul = $2, tanggal = $3, detail = $4, updated_at = $6";
+        self.client.execute(
+            query,
+            &[
+                &posting.id,
+                &posting.judul,
+                &posting.tanggal,
+                &posting.detail,
+                &posting.created_at.unwrap_or_else(|| chrono::Utc::now()),
+                &posting.updated_at.unwrap_or_else(|| chrono::Utc::now()),
+            ],
+        ).await?;
+        
+        // Delete existing posting-asset relationships
+        let delete_query = "DELETE FROM posting_assets WHERE posting_id = $1";
+        self.client.execute(delete_query, &[&posting.id]).await?;
+        
+        // Insert new posting-asset relationships
+        for asset_id in &posting.asset_ids {
+            let insert_query = "INSERT INTO posting_assets (posting_id, asset_id) VALUES ($1, $2)";
+            self.client.execute(insert_query, &[&posting.id, asset_id]).await?;
+            log::debug!("Associated asset ID: {} with posting ID: {}", asset_id, posting.id);
+        }
+        
+        log::info!("Successfully upserted posting with ID: {} and associated {} assets", posting.id, posting.asset_ids.len());
+        Ok(())
+    }
+
     pub async fn get_folder_contents(
         &self,
         folder_name: &str,
@@ -191,6 +226,91 @@ impl AppState {
         
         log::info!("Successfully updated folder contents for folder: {}, with {} assets", folder_name, contents.len());
         Ok(())
+    }
+
+    pub async fn get_posting_by_id_with_assets(
+        &self,
+        posting_id: &Uuid,
+    ) -> Result<Option<crate::posting::models::Posting>, Box<dyn std::error::Error>> {
+        log::debug!("Attempting to retrieve posting with ID: {} and its associated assets", posting_id);
+        
+        // Get the main posting data
+        let posting_query = "SELECT * FROM postings WHERE id = $1";
+        let posting_rows = self.client.query(posting_query, &[posting_id]).await?;
+        
+        if let Some(posting_row) = posting_rows.get(0) {
+            // Convert the row to JSON and deserialize to Posting struct
+            let mut posting_json = row_to_json(posting_row);
+            
+            // Get the associated asset IDs
+            let asset_query = "SELECT asset_id FROM posting_assets WHERE posting_id = $1 ORDER BY asset_id";
+            let asset_rows = self.client.query(asset_query, &[posting_id]).await?;
+            
+            let mut asset_ids = Vec::new();
+            for row in asset_rows {
+                let asset_id: Uuid = row.get(0);
+                asset_ids.push(asset_id);
+            }
+            
+            // Add asset_ids to the JSON object before deserializing
+            if let serde_json::Value::Object(ref mut obj) = posting_json {
+                obj.insert("asset_ids".to_string(), serde_json::Value::Array(
+                    asset_ids.iter().map(|id| serde_json::Value::String(id.to_string())).collect()
+                ));
+            }
+            
+            let posting: crate::posting::models::Posting = serde_json::from_value(posting_json)?;
+            log::debug!("Successfully retrieved posting with ID: {} and {} associated assets", posting.id, posting.asset_ids.len());
+            Ok(Some(posting))
+        } else {
+            log::debug!("Posting with ID: {} not found", posting_id);
+            Ok(None)
+        }
+    }
+
+    pub async fn get_all_postings_with_assets(
+        &self,
+    ) -> Result<Vec<crate::posting::models::Posting>, Box<dyn std::error::Error>> {
+        log::debug!("Attempting to retrieve all postings with their associated assets");
+        
+        // Get all postings
+        let posting_query = "SELECT * FROM postings ORDER BY created_at DESC";
+        let posting_rows = self.client.query(posting_query, &[]).await?;
+        
+        // Get all posting-asset relationships
+        let asset_query = "SELECT posting_id, asset_id FROM posting_assets ORDER BY posting_id, asset_id";
+        let asset_rows = self.client.query(asset_query, &[]).await?;
+        
+        // Create a map from posting_id to asset_ids
+        let mut asset_map: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
+        for row in asset_rows {
+            let posting_id: Uuid = row.get(0);
+            let asset_id: Uuid = row.get(1);
+            
+            asset_map.entry(posting_id).or_default().push(asset_id);
+        }
+        
+        let mut postings = Vec::new();
+        for row in posting_rows {
+            let mut posting_json = row_to_json(&row);
+            
+            // Get the posting ID to look up associated assets
+            let posting_id: Uuid = row.get("id");
+            let asset_ids = asset_map.get(&posting_id).cloned().unwrap_or_default();
+            
+            // Add asset_ids to the JSON object before deserializing
+            if let serde_json::Value::Object(ref mut obj) = posting_json {
+                obj.insert("asset_ids".to_string(), serde_json::Value::Array(
+                    asset_ids.iter().map(|id| serde_json::Value::String(id.to_string())).collect()
+                ));
+            }
+            
+            let posting: crate::posting::models::Posting = serde_json::from_value(posting_json)?;
+            postings.push(posting);
+        }
+        
+        log::info!("Successfully retrieved {} postings with their associated assets", postings.len());
+        Ok(postings)
     }
 }
 

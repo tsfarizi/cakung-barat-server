@@ -13,6 +13,7 @@ use crate::{
     posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest},
 };
 use chrono::NaiveDate;
+use futures::future;
 use uuid::Uuid;
 
 
@@ -40,42 +41,60 @@ pub struct PostingResponse {
 )]
 pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
     info!("Executing get_all_postings handler");
-    debug!("Attempting to fetch all items from 'postings' table.");
-    match data.get_all_items::<Posting>("postings").await {
+    debug!("Attempting to fetch all postings with their associated assets.");
+    match data.get_all_postings_with_assets().await {
         Ok(postings) => {
             info!(
                 "Successfully fetched {} postings from the database.",
                 postings.len()
             );
             debug!("Hydrating posting responses with their associated assets.");
-            let response: Vec<PostingResponse> = postings
-                .iter()
-                .map(|posting| {
-                    debug!("Hydrating assets for posting ID: {:?}", posting.id);
-
-                    let assets: Vec<Asset> = posting
-                        .asset_ids
-                        .iter()
-                        .filter_map(|id| {
-                            debug!("Fetching asset with ID: {:?}", id);
-
-                            futures::executor::block_on(data.get_item::<Asset>("assets", id)).unwrap_or(None)
-                        })
-                        .collect();
-                    debug!(
-                        "Found {} assets for posting ID: {:?}",
-                        assets.len(),
-                        posting.id
-                    );
-                    PostingResponse {
-                        id: posting.id,
-                        judul: posting.judul.clone(),
-                        tanggal: posting.tanggal,
-                        detail: posting.detail.clone(),
-                        assets,
+            
+            let mut response: Vec<PostingResponse> = Vec::new();
+            
+            for posting in &postings {
+                debug!("Hydrating assets for posting ID: {:?}", posting.id);
+                
+                // Create futures for fetching all assets concurrently
+                let asset_futures: Vec<_> = posting
+                    .asset_ids
+                    .iter()
+                    .map(|id| {
+                        debug!("Fetching asset with ID: {:?}", id);
+                        data.get_item::<Asset>("assets", id)
+                    })
+                    .collect();
+                
+                // Execute all futures concurrently
+                let asset_results = match future::try_join_all(asset_futures).await {
+                    Ok(results) => results,
+                    Err(e) => {
+                        error!("Failed to fetch assets for posting {}: {}", posting.id, e);
+                        return HttpResponse::InternalServerError()
+                            .json(ErrorResponse::internal_error("Failed to retrieve assets"));
                     }
-                })
-                .collect();
+                };
+                
+                // Collect non-None assets
+                let assets: Vec<Asset> = asset_results.into_iter()
+                    .filter_map(|opt| opt)
+                    .collect();
+                
+                debug!(
+                    "Found {} assets for posting ID: {:?}",
+                    assets.len(),
+                    posting.id
+                );
+                
+                response.push(PostingResponse {
+                    id: posting.id,
+                    judul: posting.judul.clone(),
+                    tanggal: posting.tanggal,
+                    detail: posting.detail.clone(),
+                    assets,
+                });
+            }
+            
             info!("Successfully hydrated all posting responses.");
             HttpResponse::Ok().json(response)
         }
@@ -108,21 +127,39 @@ pub async fn get_posting_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> imp
         posting_id
     );
     debug!(
-        "Attempting to fetch item with ID {:?} from 'postings' table.",
+        "Attempting to fetch posting with ID {:?} with associated assets.",
         posting_id
     );
-    match data.get_item::<Posting>("postings", &posting_id).await {
+    match data.get_posting_by_id_with_assets(&posting_id).await {
         Ok(Some(posting)) => {
             info!("Successfully fetched posting with ID: {:?}", posting_id);
             debug!("Hydrating assets for posting ID: {:?}", posting.id);
-            let assets: Vec<Asset> = posting
+            
+            // Create futures for fetching all assets concurrently
+            let asset_futures: Vec<_> = posting
                 .asset_ids
                 .iter()
-                .filter_map(|id| {
+                .map(|id| {
                     debug!("Fetching asset with ID: {:?}", id);
-                    futures::executor::block_on(data.get_item::<Asset>("assets", id)).unwrap_or(None)
+                    data.get_item::<Asset>("assets", id)
                 })
                 .collect();
+            
+            // Execute all futures concurrently
+            let asset_results = match future::try_join_all(asset_futures).await {
+                Ok(results) => results,
+                Err(e) => {
+                    error!("Failed to fetch assets for posting {}: {}", posting.id, e);
+                    return HttpResponse::InternalServerError()
+                        .json(ErrorResponse::internal_error("Failed to retrieve assets"));
+                }
+            };
+            
+            // Collect non-None assets
+            let assets: Vec<Asset> = asset_results.into_iter()
+                .filter_map(|opt| opt)
+                .collect();
+            
             debug!(
                 "Found {} assets for posting ID: {:?}",
                 assets.len(),
@@ -214,9 +251,9 @@ pub async fn create_posting(
     );
     new_posting.tanggal = current_date;
 
-    debug!("Attempting to insert new posting into 'postings' table.");
-    if let Err(e) = data.insert_item("postings", &new_posting.id, &new_posting).await {
-        error!("Failed to insert new posting into database: {}", e);
+    debug!("Attempting to upsert new posting with assets into database.");
+    if let Err(e) = data.upsert_posting_with_assets(&new_posting).await {
+        error!("Failed to upsert new posting into database: {}", e);
         return HttpResponse::InternalServerError()
             .json(ErrorResponse::internal_error("Failed to create posting"));
     }
@@ -224,9 +261,29 @@ pub async fn create_posting(
     info!("New posting created successfully with ID: {:?}", new_posting.id);
 
     debug!("Hydrating response for new posting.");
-    let assets: Vec<Asset> = asset_ids
+    
+    // Create futures for fetching all assets concurrently
+    let asset_futures: Vec<_> = asset_ids
         .iter()
-        .filter_map(|id| futures::executor::block_on(data.get_item::<Asset>("assets", id)).unwrap_or(None))
+        .map(|id| {
+            debug!("Fetching asset with ID: {:?}", id);
+            data.get_item::<Asset>("assets", id)
+        })
+        .collect();
+    
+    // Execute all futures concurrently
+    let asset_results = match future::try_join_all(asset_futures).await {
+        Ok(results) => results,
+        Err(e) => {
+            error!("Failed to fetch assets for new posting {}: {}", new_posting.id, e);
+            return HttpResponse::InternalServerError()
+                .json(ErrorResponse::internal_error("Failed to retrieve assets"));
+        }
+    };
+    
+    // Collect non-None assets
+    let assets: Vec<Asset> = asset_results.into_iter()
+        .filter_map(|opt| opt)
         .collect();
 
     let response = PostingResponse {
@@ -308,20 +365,40 @@ pub async fn update_posting(
             }
 
             debug!(
-                "Attempting to insert updated posting with ID {:?} into database.",
+                "Attempting to upsert updated posting with ID {:?} into database.",
                 posting_id
             );
-            if let Err(e) = data.insert_item("postings", &posting_id, &posting).await {
+            if let Err(e) = data.upsert_posting_with_assets(&posting).await {
                 error!("Failed to update posting in database: {}", e);
                 return HttpResponse::InternalServerError()
                     .json(ErrorResponse::internal_error("Failed to update posting"));
             }
 
             debug!("Hydrating response for updated posting.");
-            let assets: Vec<Asset> = posting
+            
+            // Create futures for fetching all assets concurrently
+            let asset_futures: Vec<_> = posting
                 .asset_ids
                 .iter()
-                .filter_map(|id| futures::executor::block_on(data.get_item::<Asset>("assets", id)).unwrap_or(None))
+                .map(|id| {
+                    debug!("Fetching asset with ID: {:?}", id);
+                    data.get_item::<Asset>("assets", id)
+                })
+                .collect();
+            
+            // Execute all futures concurrently
+            let asset_results = match future::try_join_all(asset_futures).await {
+                Ok(results) => results,
+                Err(e) => {
+                    error!("Failed to fetch assets for updated posting {}: {}", posting.id, e);
+                    return HttpResponse::InternalServerError()
+                        .json(ErrorResponse::internal_error("Failed to retrieve assets"));
+                }
+            };
+            
+            // Collect non-None assets
+            let assets: Vec<Asset> = asset_results.into_iter()
+                .filter_map(|opt| opt)
                 .collect();
 
             let response = PostingResponse {
