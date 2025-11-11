@@ -5,7 +5,6 @@ use std::path::Path;
 use uuid::Uuid;
 use reqwest;
 use serde_json::Value;
-use std::sync::Once;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, utoipa::ToSchema)]
 pub struct FolderContent {
@@ -29,20 +28,8 @@ fn get_supabase_config() -> (String, String, String) {
     (supabase_url, supabase_anon_key, bucket_name)
 }
 
-static INIT: Once = Once::new();
-
 // Create a reqwest client with proper TLS configuration
 fn create_client() -> reqwest::Client {
-    INIT.call_once(|| {
-        // Initialize openssl to load system certificates on Windows
-        #[cfg(target_os = "windows")]
-        {
-            unsafe {
-                openssl_probe::init_openssl_env_vars();
-            }
-        }
-    });
-
     // Check if we're in production or development to decide on TLS verification
     let tls_verification = std::env::var("TLS_VERIFY")
         .unwrap_or_else(|_| "true".to_string())
@@ -50,6 +37,7 @@ fn create_client() -> reqwest::Client {
         .unwrap_or(true);
 
     let mut builder = reqwest::Client::builder()
+        .use_rustls_tls()
         .user_agent("cakung-barat-server/1.0");
 
     if !tls_verification {

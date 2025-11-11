@@ -420,7 +420,6 @@ dependencies = [
  "futures",
  "futures-util",
  "log",
- "openssl-probe",
  "parking_lot",
  "postgrest",
  "reqwest",
