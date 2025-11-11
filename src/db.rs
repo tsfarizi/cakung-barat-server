@@ -32,6 +32,17 @@ impl AppState {
             .await
     }
 
+    pub async fn get_assets_by_ids(&self, ids: &Vec<Uuid>) -> Result<Vec<crate::asset::models::Asset>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        sqlx::query_as("SELECT * FROM assets WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&self.pool)
+            .await
+    }
+
     pub async fn insert_asset(&self, asset: &crate::asset::models::Asset) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO assets (id, name, filename, url, description, created_at, updated_at) 

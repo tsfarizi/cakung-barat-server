@@ -13,7 +13,6 @@ use crate::{
     posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest},
 };
 use chrono::NaiveDate;
-use futures::future;
 use uuid::Uuid;
 
 
@@ -49,52 +48,45 @@ pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
                 postings.len()
             );
             debug!("Hydrating posting responses with their associated assets.");
-            
-            let mut response: Vec<PostingResponse> = Vec::new();
-            
-            for posting in &postings {
-                debug!("Hydrating assets for posting ID: {:?}", posting.id);
-                
-                // Create futures for fetching all assets concurrently
-                let asset_futures: Vec<_> = posting
-                    .asset_ids
-                    .iter()
-                    .map(|id| {
-                        debug!("Fetching asset with ID: {:?}", id);
-                        data.get_asset_by_id(id)
-                    })
+
+            // 1. Kumpulkan SEMUA asset_id unik dari SEMUA posting
+            let all_asset_ids: Vec<Uuid> = postings.iter()
+                .flat_map(|p| p.asset_ids.iter())
+                .cloned()
+                .collect::<std::collections::HashSet<Uuid>>() // Otomatis deduplikasi
+                .into_iter()
+                .collect();
+
+            // 2. Panggil fungsi batch-fetching BARU (satu query)
+            let all_assets = match data.get_assets_by_ids(&all_asset_ids).await {
+                Ok(assets) => assets,
+                Err(e) => {
+                    error!("Failed to batch fetch assets: {}", e);
+                    return HttpResponse::InternalServerError()
+                        .json(ErrorResponse::internal_error("Failed to retrieve assets"));
+                }
+            };
+
+            // 3. Buat HashMap untuk pencarian cepat di memori (O(1))
+            let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
+                .map(|a| (a.id, a))
+                .collect();
+
+            // 4. Bangun respons dengan me-lookup dari HashMap (bukan query DB)
+            let response: Vec<PostingResponse> = postings.iter().map(|posting| {
+                let assets_for_this_posting: Vec<Asset> = posting.asset_ids.iter()
+                    .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
                     .collect();
-                
-                // Execute all futures concurrently
-                let asset_results = match future::try_join_all(asset_futures).await {
-                    Ok(results) => results,
-                    Err(e) => {
-                        error!("Failed to fetch assets for posting {}: {}", posting.id, e);
-                        return HttpResponse::InternalServerError()
-                            .json(ErrorResponse::internal_error("Failed to retrieve assets"));
-                    }
-                };
-                
-                // Collect non-None assets
-                let assets: Vec<Asset> = asset_results.into_iter()
-                    .filter_map(|opt| opt)
-                    .collect();
-                
-                debug!(
-                    "Found {} assets for posting ID: {:?}",
-                    assets.len(),
-                    posting.id
-                );
-                
-                response.push(PostingResponse {
+
+                PostingResponse {
                     id: posting.id,
                     judul: posting.judul.clone(),
                     tanggal: posting.tanggal,
                     detail: posting.detail.clone(),
-                    assets,
-                });
-            }
-            
+                    assets: assets_for_this_posting,
+                }
+            }).collect();
+
             info!("Successfully hydrated all posting responses.");
             HttpResponse::Ok().json(response)
         }
@@ -134,32 +126,30 @@ pub async fn get_posting_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> imp
         Ok(Some(posting)) => {
             info!("Successfully fetched posting with ID: {:?}", posting_id);
             debug!("Hydrating assets for posting ID: {:?}", posting.id);
-            
-            // Create futures for fetching all assets concurrently
-            let asset_futures: Vec<_> = posting
-                .asset_ids
-                .iter()
-                .map(|id| {
-                    debug!("Fetching asset with ID: {:?}", id);
-                    data.get_asset_by_id(id)
-                })
-                .collect();
-            
-            // Execute all futures concurrently
-            let asset_results = match future::try_join_all(asset_futures).await {
-                Ok(results) => results,
+
+            // Ambil asset_ids yang relevan dari satu posting
+            let asset_ids = &posting.asset_ids;
+
+            // Panggil fungsi batch-fetching satu kali
+            let all_assets = match data.get_assets_by_ids(asset_ids).await {
+                Ok(assets) => assets,
                 Err(e) => {
-                    error!("Failed to fetch assets for posting {}: {}", posting.id, e);
+                    error!("Failed to batch fetch assets: {}", e);
                     return HttpResponse::InternalServerError()
                         .json(ErrorResponse::internal_error("Failed to retrieve assets"));
                 }
             };
-            
-            // Collect non-None assets
-            let assets: Vec<Asset> = asset_results.into_iter()
-                .filter_map(|opt| opt)
+
+            // Buat HashMap untuk pencarian cepat di memori (O(1))
+            let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
+                .map(|a| (a.id, a))
                 .collect();
-            
+
+            // Bangun respons dengan me-lookup dari HashMap (bukan query DB)
+            let assets: Vec<Asset> = posting.asset_ids.iter()
+                .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
+                .collect();
+
             debug!(
                 "Found {} assets for posting ID: {:?}",
                 assets.len(),
@@ -261,29 +251,28 @@ pub async fn create_posting(
     info!("New posting created successfully with ID: {:?}", new_posting.id);
 
     debug!("Hydrating response for new posting.");
-    
-    // Create futures for fetching all assets concurrently
-    let asset_futures: Vec<_> = asset_ids
-        .iter()
-        .map(|id| {
-            debug!("Fetching asset with ID: {:?}", id);
-            data.get_asset_by_id(id)
-        })
-        .collect();
-    
-    // Execute all futures concurrently
-    let asset_results = match future::try_join_all(asset_futures).await {
-        Ok(results) => results,
+
+    // Ambil asset_ids yang relevan dari posting baru
+    let asset_ids = &new_posting.asset_ids;
+
+    // Panggil fungsi batch-fetching satu kali
+    let all_assets = match data.get_assets_by_ids(asset_ids).await {
+        Ok(assets) => assets,
         Err(e) => {
-            error!("Failed to fetch assets for new posting {}: {}", new_posting.id, e);
+            error!("Failed to batch fetch assets: {}", e);
             return HttpResponse::InternalServerError()
                 .json(ErrorResponse::internal_error("Failed to retrieve assets"));
         }
     };
-    
-    // Collect non-None assets
-    let assets: Vec<Asset> = asset_results.into_iter()
-        .filter_map(|opt| opt)
+
+    // Buat HashMap untuk pencarian cepat di memori (O(1))
+    let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
+        .map(|a| (a.id, a))
+        .collect();
+
+    // Bangun respons dengan me-lookup dari HashMap (bukan query DB)
+    let assets: Vec<Asset> = new_posting.asset_ids.iter()
+        .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
         .collect();
 
     let response = PostingResponse {
@@ -375,30 +364,28 @@ pub async fn update_posting(
             }
 
             debug!("Hydrating response for updated posting.");
-            
-            // Create futures for fetching all assets concurrently
-            let asset_futures: Vec<_> = posting
-                .asset_ids
-                .iter()
-                .map(|id| {
-                    debug!("Fetching asset with ID: {:?}", id);
-                    data.get_asset_by_id(id)
-                })
-                .collect();
-            
-            // Execute all futures concurrently
-            let asset_results = match future::try_join_all(asset_futures).await {
-                Ok(results) => results,
+
+            // Ambil asset_ids yang relevan dari posting yang telah diperbarui
+            let asset_ids = &posting.asset_ids;
+
+            // Panggil fungsi batch-fetching satu kali
+            let all_assets = match data.get_assets_by_ids(asset_ids).await {
+                Ok(assets) => assets,
                 Err(e) => {
-                    error!("Failed to fetch assets for updated posting {}: {}", posting.id, e);
+                    error!("Failed to batch fetch assets: {}", e);
                     return HttpResponse::InternalServerError()
                         .json(ErrorResponse::internal_error("Failed to retrieve assets"));
                 }
             };
-            
-            // Collect non-None assets
-            let assets: Vec<Asset> = asset_results.into_iter()
-                .filter_map(|opt| opt)
+
+            // Buat HashMap untuk pencarian cepat di memori (O(1))
+            let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
+                .map(|a| (a.id, a))
+                .collect();
+
+            // Bangun respons dengan me-lookup dari HashMap (bukan query DB)
+            let assets: Vec<Asset> = posting.asset_ids.iter()
+                .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
                 .collect();
 
             let response = PostingResponse {
