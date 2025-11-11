@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema, sqlx::FromRow)]
 pub struct Posting {
     #[schema(example = "f1e2d3c4-b5a6-7890-1234-567890abcdef")]
     pub id: Uuid,
@@ -16,6 +16,7 @@ pub struct Posting {
     )]
     pub detail: String,
     #[serde(default)]
+    #[sqlx(skip)]
     pub asset_ids: Vec<Uuid>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,

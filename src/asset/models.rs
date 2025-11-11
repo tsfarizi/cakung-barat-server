@@ -3,7 +3,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema, sqlx::FromRow)]
 pub struct Asset {
     #[schema(example = "a1b2c3d4-e5f6-7890-1234-567890abcdef")]
     pub id: Uuid,

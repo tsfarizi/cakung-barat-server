@@ -1,4 +1,3 @@
-
 use actix_multipart::Multipart;
 use actix_web::{
     HttpResponse, Responder,
@@ -8,9 +7,10 @@ use log::{debug, error, info};
 use serde::Serialize;
 use std::collections::HashSet;
 use utoipa::ToSchema;
+use sqlx::Row;
 
 use crate::ErrorResponse;
-use crate::{asset::models::Asset, db::AppState, posting::models::Posting, storage};
+use crate::{asset::models::Asset, db::AppState, storage};
 use uuid::Uuid;
 
 
@@ -55,7 +55,7 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
             );
 
             debug!("Attempting to insert new asset into 'assets' table.");
-            if let Err(e) = data.insert_item("assets", &new_asset.id, &new_asset).await {
+            if let Err(e) = data.insert_asset(&new_asset).await {
                 error!("Failed to insert asset into db: {}", e);
                 return HttpResponse::InternalServerError()
                     .json(ErrorResponse::internal_error("Failed to save asset"));
@@ -106,10 +106,10 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
                     "Associating asset {:?} with posting '{:?}'",
                     new_asset.id, posting_id
                 );
-                match data.get_item::<Posting>("postings", &posting_id).await {
+                match data.get_posting_by_id_with_assets(&posting_id).await {
                     Ok(Some(mut posting)) => {
                         posting.asset_ids.push(new_asset.id);
-                        if let Err(e) = data.insert_item("postings", &posting.id, &posting).await {
+                        if let Err(e) = data.upsert_posting_with_assets(&posting).await {
                             error!(
                                 "Failed to update posting {} with new asset {}: {}",
                                 posting.id, new_asset.id, e
@@ -171,7 +171,7 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
         "Attempting to fetch asset with ID {:?} for deletion.",
         asset_id_to_delete
     );
-    match data.get_item::<Asset>("assets", &asset_id_to_delete).await {
+    match data.get_asset_by_id(&asset_id_to_delete).await {
         Ok(Some(asset)) => {
             info!("Found asset {:?} to delete.", asset_id_to_delete);
             debug!(
@@ -192,7 +192,7 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                 "Attempting to delete asset record {:?} from 'assets' table.",
                 asset_id_to_delete
             );
-            if let Err(e) = data.delete_item("assets", &asset_id_to_delete).await {
+            if let Err(e) = data.delete_asset(&asset_id_to_delete).await {
                 error!(
                     "Failed to delete asset from db, but file was deleted: {}",
                     e
@@ -203,7 +203,7 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                 "Scanning postings to disassociate asset {:?}",
                 asset_id_to_delete
             );
-            if let Ok(postings) = data.get_all_items::<Posting>("postings").await {
+            if let Ok(postings) = data.get_all_postings_with_assets().await {
                 for mut posting in postings {
                     if posting.asset_ids.contains(&asset_id_to_delete) {
                         debug!(
@@ -211,7 +211,7 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                             asset_id_to_delete, posting.id
                         );
                         posting.asset_ids.retain(|id| *id != asset_id_to_delete);
-                        if let Err(e) = data.insert_item("postings", &posting.id, &posting).await {
+                        if let Err(e) = data.upsert_posting_with_assets(&posting).await {
                             error!("Failed to update posting after disassociating asset: {}", e);
                         }
                     }
@@ -264,7 +264,7 @@ pub async fn get_asset_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> impl 
         "Attempting to fetch item with ID {:?} from 'assets' table.",
         asset_id
     );
-    match data.get_item::<Asset>("assets", &asset_id).await {
+    match data.get_asset_by_id(&asset_id).await {
         Ok(Some(asset)) => {
             info!("Successfully fetched asset with ID: {:?}", asset_id);
             HttpResponse::Ok().json(asset)
@@ -300,7 +300,7 @@ pub async fn get_asset_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> impl 
 pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Responder {
     info!("Executing get_all_assets_structured handler");
     debug!("Fetching all assets from 'assets' table.");
-    let all_assets = match data.get_all_items::<Asset>("assets").await {
+    let all_assets = match data.get_all_assets().await {
         Ok(assets) => {
             info!("Successfully fetched {} assets.", assets.len());
             assets
@@ -322,7 +322,7 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
         LEFT JOIN asset_folders af ON f.id = af.folder_id
     ";
     
-    match data.client.query(folder_asset_query, &[]).await {
+    match sqlx::query(folder_asset_query).fetch_all(&data.pool).await {
         Ok(rows) => {
             let mut folder_assets_map: std::collections::HashMap<String, Vec<Uuid>> = std::collections::HashMap::new();
             
@@ -390,7 +390,7 @@ pub async fn serve_asset(req: actix_web::HttpRequest, data: web::Data<AppState>)
         "Searching for asset with filename '{}' in database.",
         &filename
     );
-    match data.get_all_items::<Asset>("assets").await {
+    match data.get_all_assets().await {
         Ok(assets) => {
             if let Some(asset) = assets.iter().find(|a| a.filename == filename) {
                 info!("Asset found for filename: {}. Redirecting to Supabase storage.", &filename);
@@ -510,7 +510,7 @@ pub async fn list_folder_handler(
         Ok(Some(asset_ids)) => {
             let mut assets = Vec::new();
             for asset_id in asset_ids {
-                match data.get_item::<Asset>("assets", &asset_id).await {
+                match data.get_asset_by_id(&asset_id).await {
                     Ok(Some(asset)) => assets.push(asset),
                     Ok(None) => {
                         error!("Asset with ID {} found in folder but not in assets table.", asset_id);

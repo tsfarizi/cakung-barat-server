@@ -61,7 +61,7 @@ pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
                     .iter()
                     .map(|id| {
                         debug!("Fetching asset with ID: {:?}", id);
-                        data.get_item::<Asset>("assets", id)
+                        data.get_asset_by_id(id)
                     })
                     .collect();
                 
@@ -141,7 +141,7 @@ pub async fn get_posting_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> imp
                 .iter()
                 .map(|id| {
                     debug!("Fetching asset with ID: {:?}", id);
-                    data.get_item::<Asset>("assets", id)
+                    data.get_asset_by_id(id)
                 })
                 .collect();
             
@@ -222,7 +222,7 @@ pub async fn create_posting(
 
     for id in &asset_ids {
         debug!("Validating asset with ID: {:?}", id);
-        match data.get_item::<Asset>("assets", id).await {
+        match data.get_asset_by_id(id).await {
             Ok(Some(_)) => {
                 debug!("Asset validation successful for ID: {:?}", id);
             }
@@ -267,7 +267,7 @@ pub async fn create_posting(
         .iter()
         .map(|id| {
             debug!("Fetching asset with ID: {:?}", id);
-            data.get_item::<Asset>("assets", id)
+            data.get_asset_by_id(id)
         })
         .collect();
     
@@ -325,7 +325,7 @@ pub async fn update_posting(
         "Attempting to fetch posting with ID {:?} for update.",
         posting_id
     );
-    match data.get_item::<Posting>("postings", &posting_id).await {
+    match data.get_posting_by_id_with_assets(&posting_id).await {
         Ok(Some(mut posting)) => {
             info!(
                 "Found posting with ID {:?}. Proceeding with update.",
@@ -342,7 +342,7 @@ pub async fn update_posting(
             if let Some(asset_ids) = &req.asset_ids {
                 debug!("Validating asset IDs for update.");
                 for id in asset_ids {
-                    match data.get_item::<Asset>("assets", id).await {
+                    match data.get_asset_by_id(id).await {
                         Ok(Some(_)) => (),
                         Ok(None) => {
                             let msg = format!("Asset with ID {:?} not found", id);
@@ -382,7 +382,7 @@ pub async fn update_posting(
                 .iter()
                 .map(|id| {
                     debug!("Fetching asset with ID: {:?}", id);
-                    data.get_item::<Asset>("assets", id)
+                    data.get_asset_by_id(id)
                 })
                 .collect();
             
@@ -449,7 +449,7 @@ pub async fn delete_posting(id: Path<Uuid>, data: web::Data<AppState>) -> impl R
         "Attempting to delete posting with ID {:?} from database.",
         posting_id
     );
-    match data.delete_item("postings", &posting_id).await {
+    match data.delete_posting(&posting_id).await {
         Ok(_) => {
             info!(
                 "Posting with id: {:?} deleted successfully from database.",
