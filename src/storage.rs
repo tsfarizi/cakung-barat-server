@@ -5,6 +5,7 @@ use std::path::Path;
 use uuid::Uuid;
 use reqwest;
 use serde_json::Value;
+use log;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, utoipa::ToSchema)]
 pub struct FolderContent {
@@ -15,8 +16,8 @@ pub struct FolderContent {
 
 use dotenvy::dotenv;
 
-// Supabase storage configuration
 fn get_supabase_config() -> (String, String, String) {
+    log::debug!("Loading Supabase configuration");
     dotenv().ok();
     let supabase_url = std::env::var("SUPABASE_URL")
         .expect("SUPABASE_URL must be set");
@@ -25,12 +26,12 @@ fn get_supabase_config() -> (String, String, String) {
     let bucket_name = std::env::var("BUCKET_NAME")
         .unwrap_or_else(|_| "cakung-barat-supabase-bucket".to_string());
     
+    log::debug!("Supabase configuration loaded successfully for bucket: {}", bucket_name);
     (supabase_url, supabase_anon_key, bucket_name)
 }
 
-// Create a reqwest client with proper TLS configuration
 fn create_client() -> reqwest::Client {
-    // Check if we're in production or development to decide on TLS verification
+    log::debug!("Creating reqwest HTTP client");
     let tls_verification = std::env::var("TLS_VERIFY")
         .unwrap_or_else(|_| "true".to_string())
         .parse()
@@ -41,6 +42,7 @@ fn create_client() -> reqwest::Client {
         .user_agent("cakung-barat-server/1.0");
 
     if !tls_verification {
+        log::warn!("TLS verification is disabled for HTTP client");
         builder = builder.danger_accept_invalid_certs(true);
     }
 
@@ -66,7 +68,7 @@ pub async fn save_file(
 
         match field_name {
             "file" => {
-                // Process the uploaded file
+
                 let file_name = content_disposition.get_filename().ok_or_else(|| "No filename".to_string())?;
                 let sanitized_filename = sanitize(&file_name);
                 
@@ -75,7 +77,7 @@ pub async fn save_file(
                     .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or("");
                 
-                // Generate unique filename
+
                 let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), sanitized_filename.replace(".", "_"), ext);
 
                 let mut field_data = Vec::new();
@@ -83,7 +85,7 @@ pub async fn save_file(
                     field_data.extend_from_slice(&chunk);
                 }
 
-                // Upload to Supabase storage
+
                 upload_to_supabase_storage(&unique_filename, &field_data, &ext).await?;
                 
                 filename = Some(unique_filename);
@@ -102,7 +104,7 @@ pub async fn save_file(
                     bytes.extend_from_slice(&chunk);
                 }
                 let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-                // Parse comma-separated folder names
+
                 folder_names = value
                     .split(',')
                     .map(|s| s.trim().to_string())
@@ -118,7 +120,7 @@ pub async fn save_file(
                 asset_name = Some(value);
             }
             _ => {
-                // Skip any unexpected fields
+
                 continue;
             }
         }
@@ -131,11 +133,13 @@ pub async fn save_file(
 }
 
 async fn upload_to_supabase_storage(filename: &str, data: &[u8], _file_ext: &str) -> Result<(), String> {
+    log::info!("Attempting to upload asset file to Supabase storage: {}", filename);
+    log::debug!("Uploading {} bytes to Supabase storage: {}", data.len(), filename);
     let client = create_client();
     let (supabase_url, supabase_anon_key, bucket_name) = get_supabase_config();
     
-    // Construct the upload URL
     let upload_url = format!("{}/storage/v1/object/{}/{}", supabase_url, bucket_name, filename);
+    log::debug!("Supabase upload URL: {}", upload_url);
     
     let response = client
         .post(&upload_url)
@@ -147,18 +151,21 @@ async fn upload_to_supabase_storage(filename: &str, data: &[u8], _file_ext: &str
         .map_err(|e| e.to_string())?;
 
     if response.status().is_success() {
+        log::info!("Successfully uploaded asset file to Supabase storage: {}", filename);
         Ok(())
     } else {
+        log::error!("Upload failed for file {} with status: {}", filename, response.status());
         Err(format!("Upload failed with status: {}", response.status()))
     }
 }
 
 pub async fn delete_asset_file(filename: &str) -> Result<(), String> {
+    log::info!("Attempting to delete asset file from Supabase storage: {}", filename);
     let client = create_client();
     let (supabase_url, supabase_anon_key, bucket_name) = get_supabase_config();
     
-    // Construct the delete URL
     let delete_url = format!("{}/storage/v1/object/{}/{}", supabase_url, bucket_name, filename);
+    log::debug!("Supabase delete URL: {}", delete_url);
     
     let response = client
         .delete(&delete_url)
@@ -169,27 +176,34 @@ pub async fn delete_asset_file(filename: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if response.status().is_success() {
+        log::info!("Successfully deleted asset file from Supabase storage: {}", filename);
         Ok(())
     } else {
+        log::error!("Delete failed for file {} with status: {}", filename, response.status());
         Err(format!("Delete failed with status: {}", response.status()))
     }
 }
 
 pub fn get_supabase_asset_url(filename: &str) -> String {
+    log::debug!("Generating Supabase asset URL for file: {}", filename);
     let (supabase_url, _, bucket_name) = get_supabase_config();
-    format!("{}/storage/v1/object/public/{}/{}", supabase_url, bucket_name, filename)
+    let url = format!("{}/storage/v1/object/public/{}/{}", supabase_url, bucket_name, filename);
+    log::debug!("Generated Supabase asset URL: {}", url);
+    url
 }
 
 pub async fn create_folder(folder_name: &str) -> Result<(), String> {
-    // Supabase storage doesn't have traditional folders, but we can create a placeholder file
-    // to represent a folder conceptually
+    log::info!("Attempting to create folder in Supabase storage: {}", folder_name);
+
     let client = create_client();
     let (supabase_url, supabase_anon_key, bucket_name) = get_supabase_config();
     
     let placeholder_filename = format!("{}/placeholder.txt", sanitize(folder_name));
     let placeholder_data = b"Folder placeholder";
+    log::debug!("Creating folder with placeholder file: {}", placeholder_filename);
     
     let upload_url = format!("{}/storage/v1/object/{}/{}", supabase_url, bucket_name, placeholder_filename);
+    log::debug!("Supabase folder creation URL: {}", upload_url);
     
     let response = client
         .post(&upload_url)
@@ -201,23 +215,27 @@ pub async fn create_folder(folder_name: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if response.status().is_success() {
+        log::info!("Successfully created folder in Supabase storage: {}", folder_name);
         Ok(())
     } else {
+        log::error!("Folder creation failed for {} with status: {}", folder_name, response.status());
         Err(format!("Folder creation failed with status: {}", response.status()))
     }
 }
 
+#[allow(dead_code)]
 pub async fn list_folder_contents(folder_name: &str) -> Result<Vec<FolderContent>, String> {
+    log::info!("Attempting to list contents of folder in Supabase storage: {}", folder_name);
     let client = create_client();
     let (supabase_url, supabase_anon_key, bucket_name) = get_supabase_config();
     
-    // Construct the list URL - get all files in a "folder" by prefix
+
     let list_url = format!("{}/storage/v1/object/list/{}", supabase_url, bucket_name);
+    log::debug!("Supabase list URL: {}", list_url);
     
-    // Correctly build the JSON object for the request body
     let body = serde_json::json!({
         "prefix": folder_name,
-        "limit": 100 // It's good practice to add a limit
+        "limit": 100
     });
     
     let response = client
@@ -230,16 +248,15 @@ pub async fn list_folder_contents(folder_name: &str) -> Result<Vec<FolderContent
         .map_err(|e| e.to_string())?;
 
     if response.status().is_success() {
+        log::info!("Successfully retrieved folder contents from Supabase storage: {}", folder_name);
         let response_text = response.text().await.map_err(|e| e.to_string())?;
         let files: Vec<Value> = serde_json::from_str(&response_text).map_err(|e| e.to_string())?;
+        log::debug!("Found {} files in folder: {}", files.len(), folder_name);
         
         let mut contents = Vec::new();
         for file in files {
             if let Some(name) = file.get("name") {
-                // In Supabase storage, everything is a file, but we can represent folders
-                // by checking if the object has a null size or specific metadata if available.
-                // For simplicity, we'll treat everything as a file for now.
-                let is_file = file.get("id").is_some(); // A simple heuristic: if it has an id, it's an object.
+                let is_file = file.get("id").is_some();
                 let size = file.get("metadata").and_then(|m| m.get("size")).and_then(|s| s.as_u64());
 
                 contents.push(FolderContent {
@@ -250,10 +267,12 @@ pub async fn list_folder_contents(folder_name: &str) -> Result<Vec<FolderContent
             }
         }
         
+        log::info!("Successfully listed {} items from folder: {}", contents.len(), folder_name);
         Ok(contents)
     } else {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        log::error!("List folder contents failed for {} with status: {}", folder_name, status);
         Err(format!("List failed with status {}: {}", status, error_text))
     }
 }

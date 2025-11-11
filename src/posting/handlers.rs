@@ -15,7 +15,7 @@ use crate::{
 use chrono::NaiveDate;
 use uuid::Uuid;
 
-// --- Response Model ---
+
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PostingResponse {
@@ -26,7 +26,7 @@ pub struct PostingResponse {
     pub assets: Vec<Asset>,
 }
 
-// --- Handlers ---
+
 
 #[utoipa::path(
     context_path = "/api",
@@ -52,17 +52,13 @@ pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
                 .iter()
                 .map(|posting| {
                     debug!("Hydrating assets for posting ID: {:?}", posting.id);
-                    // For Supabase, we will query the posting_assets junction table to get the assets
-                    // This would require a different query approach than the original code
-                    // For now, we'll use the asset_ids from the posting
+
                     let assets: Vec<Asset> = posting
                         .asset_ids
                         .iter()
                         .filter_map(|id| {
                             debug!("Fetching asset with ID: {:?}", id);
-                            // In a real implementation, we'd need to get assets differently
-                            // since we can't call the synchronous get_item from an async context
-                            // For now, we'll implement a blocking call or change the API
+
                             futures::executor::block_on(data.get_item::<Asset>("assets", id)).unwrap_or(None)
                         })
                         .collect();
@@ -216,7 +212,7 @@ pub async fn create_posting(
         req.detail.clone(),
         asset_ids.clone(),
     );
-    new_posting.tanggal = current_date; // Override the date with current date
+    new_posting.tanggal = current_date;
 
     debug!("Attempting to insert new posting into 'postings' table.");
     if let Err(e) = data.insert_item("postings", &new_posting.id, &new_posting).await {

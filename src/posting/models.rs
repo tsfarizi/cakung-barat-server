@@ -41,11 +41,7 @@ pub struct UpdatePostingRequest {
     pub asset_ids: Option<Vec<Uuid>>,
 }
 
-// #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
-// pub struct PostingAsset {
-//     pub posting_id: Uuid,
-//     pub asset_id: Uuid,
-// }
+
 
 impl Posting {
     pub fn new(judul: String, detail: String, asset_ids: Vec<Uuid>) -> Self {

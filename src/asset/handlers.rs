@@ -13,7 +13,6 @@ use crate::ErrorResponse;
 use crate::{asset::models::Asset, db::AppState, posting::models::Posting, storage};
 use uuid::Uuid;
 
-// --- New Response Models for get_all_assets_structured ---
 
 #[derive(Serialize, ToSchema)]
 pub struct FolderWithAssets {
@@ -26,7 +25,7 @@ pub struct AllAssetsResponse {
     pub folders: Vec<FolderWithAssets>,
 }
 
-// --- New and Refactored Handlers ---
+
 
 #[utoipa::path(
     context_path = "/api",
@@ -65,19 +64,16 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
 
             let mut processed_folder_names = Vec::new();
             if folder_names.is_empty() {
-                // If no folders are provided, assign to "others"
                 processed_folder_names.push("others".to_string());
             } else {
                 for folder_name in folder_names {
                     if folder_name.is_empty() {
-                        // If an empty string folder is provided, assign to "others"
                         processed_folder_names.push("others".to_string());
                     } else {
                         processed_folder_names.push(folder_name);
                     }
                 }
             }
-            // Ensure uniqueness of folder names to avoid duplicate entries
             let unique_folder_names: Vec<String> = processed_folder_names
                 .into_iter()
                 .collect::<std::collections::HashSet<String>>()
@@ -146,13 +142,6 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
     }
 }
 
-/// Request struct for delete asset form data
-#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
-pub struct DeleteAssetFormRequest {
-    /// The asset ID to delete
-    pub asset_id: Uuid,
-}
-
 #[utoipa::path(
     context_path = "/api",
     tag = "Asset Service",
@@ -172,7 +161,6 @@ pub async fn delete_asset(id: Path<Uuid>, data: web::Data<AppState>) -> impl Res
     delete_asset_by_id(asset_id_to_delete, data).await
 }
 
-/// Common function to delete asset by ID, can be used by both path parameter and form data endpoints
 async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>) -> impl Responder {
     info!(
         "Executing delete_asset handler for ID: {:?}",
@@ -209,7 +197,6 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                     "Failed to delete asset from db, but file was deleted: {}",
                     e
                 );
-                // In a real app, you might want to handle this inconsistency.
             }
 
             debug!(
@@ -231,13 +218,10 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                 }
             }
 
-            // In Supabase implementation, we need to remove the asset from all folders
-            // by querying the asset_folders table
             debug!(
                 "Scanning folders to disassociate asset {:?}",
                 asset_id_to_delete
             );
-            // This is done automatically by the ON DELETE CASCADE in the database
 
             info!(
                 "Asset {:?} deleted successfully from all records.",
@@ -258,26 +242,6 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                 .json(ErrorResponse::internal_error("Failed to retrieve asset"))
         }
     }
-}
-
-#[utoipa::path(
-    context_path = "/api",
-    tag = "Asset Service",
-    post,
-    path = "/assets/delete-by-form",
-    request_body(content = inline(DeleteAssetFormRequest), content_type = "application/x-www-form-urlencoded"),
-    responses(
-        (status = 204, description = "Asset deleted successfully"),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Asset not found", body = ErrorResponse),
-        (status = 500, description = "Internal Server Error", body = ErrorResponse)
-    )
-)]
-pub async fn delete_asset_by_form(
-    form: actix_web::web::Form<DeleteAssetFormRequest>,
-    data: web::Data<AppState>,
-) -> impl Responder {
-    delete_asset_by_id(form.asset_id, data).await
 }
 
 #[utoipa::path(
@@ -352,7 +316,6 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
     let mut folders_with_assets: Vec<FolderWithAssets> = Vec::new();
 
     debug!("Fetching all folders and their asset associations.");
-    // Use a LEFT JOIN to include folders that are empty
     let folder_asset_query = "
         SELECT f.name, af.asset_id 
         FROM folders f 
@@ -365,14 +328,13 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
             
             for row in rows {
                 let folder_name: String = row.get(0);
-                // asset_id can be NULL for empty folders, so we read it as an Option
+
                 let asset_id: Option<Uuid> = row.get(1);
                 
                 if let Some(id) = asset_id {
                     folder_assets_map.entry(folder_name).or_default().push(id);
                     asset_ids_in_folders.insert(id);
                 } else {
-                    // This ensures the folder exists in the map even if it's empty
                     folder_assets_map.entry(folder_name).or_default();
                 }
             }
@@ -419,7 +381,6 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
     HttpResponse::Ok().json(response)
 }
 
-// --- Unchanged Handlers (but might need routing changes in main.rs) ---
 
 pub async fn serve_asset(req: actix_web::HttpRequest, data: web::Data<AppState>) -> impl Responder {
     let filename: String = req.match_info().query("filename").into();
@@ -492,7 +453,6 @@ pub async fn create_folder_handler(
                 "Attempting to insert empty folder record '{}' into database.",
                 &req.folder_name
             );
-            // The database entry is handled automatically by insert_folder_contents
             if let Err(e) = data.insert_folder_contents(&req.folder_name, &vec![]).await {
                 error!("Failed to create folder record in db: {}", e);
                 return HttpResponse::InternalServerError().json(ErrorResponse::internal_error(
@@ -554,7 +514,6 @@ pub async fn list_folder_handler(
                     Ok(Some(asset)) => assets.push(asset),
                     Ok(None) => {
                         error!("Asset with ID {} found in folder but not in assets table.", asset_id);
-                        // This indicates a data inconsistency, but we'll skip it for now.
                     }
                     Err(e) => {
                         error!("Failed to fetch asset {}: {}", asset_id, e);
@@ -589,7 +548,7 @@ pub async fn list_folder_handler(
     }
 }
 
-// --- Request Structs ---
+
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct UploadAssetRequest {
@@ -608,7 +567,7 @@ pub struct CreateFolderRequest {
     pub folder_name: String,
 }
 
-// This struct is used for documentation purposes to show the form fields in Swagger UI
+
 #[allow(dead_code)]
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct CreateFolderForm {

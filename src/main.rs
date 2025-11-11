@@ -71,7 +71,6 @@ async fn main() -> std::io::Result<()> {
             posting::handlers::delete_posting,
             asset::handlers::upload_asset,
             asset::handlers::delete_asset,
-            asset::handlers::delete_asset_by_form,
             asset::handlers::get_asset_by_id,
             asset::handlers::get_all_assets_structured,
             asset::handlers::create_folder_handler,
@@ -85,7 +84,6 @@ async fn main() -> std::io::Result<()> {
                 posting::models::UpdatePostingRequest,
                 asset::handlers::UploadAssetRequest,
                 asset::handlers::CreateFolderRequest,
-                asset::handlers::DeleteAssetFormRequest,
                 posting::handlers::PostingResponse,
                 asset::handlers::AllAssetsResponse,
                 asset::handlers::FolderWithAssets,
@@ -113,7 +111,7 @@ async fn main() -> std::io::Result<()> {
     log::info!("Starting server at http://0.0.0.0:8080");
 
     HttpServer::new(move || {
-        let app_state = app_state.clone(); // Clone the app_state for each thread
+        let app_state = app_state.clone();
         let cors = Cors::default()
             .allowed_origin("https://cakung-barat-server-1065513777845.asia-southeast1.run.app")
             .allowed_origin("https://tsfarizi.github.io")
@@ -164,10 +162,7 @@ async fn main() -> std::io::Result<()> {
                             .route(web::get().to(asset::handlers::get_asset_by_id))
                             .route(web::delete().to(asset::handlers::delete_asset)),
                     )
-                    .service(
-                        web::resource("/assets/delete-by-form")
-                            .route(web::post().to(asset::handlers::delete_asset_by_form)),
-                    ),
+
             )
             .service(
                 web::resource("/assets/serve/{filename:.*}")
