@@ -71,6 +71,7 @@ async fn main() -> std::io::Result<()> {
             posting::handlers::delete_posting,
             asset::handlers::upload_asset,
             asset::handlers::delete_asset,
+            asset::handlers::delete_asset_by_form,
             asset::handlers::get_asset_by_id,
             asset::handlers::get_all_assets_structured,
             asset::handlers::create_folder_handler,
@@ -84,6 +85,7 @@ async fn main() -> std::io::Result<()> {
                 posting::models::UpdatePostingRequest,
                 asset::handlers::UploadAssetRequest,
                 asset::handlers::CreateFolderRequest,
+                asset::handlers::DeleteAssetFormRequest,
                 posting::handlers::PostingResponse,
                 asset::handlers::AllAssetsResponse,
                 asset::handlers::FolderWithAssets,
@@ -161,6 +163,10 @@ async fn main() -> std::io::Result<()> {
                         web::resource("/assets/{id}")
                             .route(web::get().to(asset::handlers::get_asset_by_id))
                             .route(web::delete().to(asset::handlers::delete_asset)),
+                    )
+                    .service(
+                        web::resource("/assets/delete-by-form")
+                            .route(web::post().to(asset::handlers::delete_asset_by_form)),
                     ),
             )
             .service(

@@ -146,6 +146,13 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
     }
 }
 
+/// Request struct for delete asset form data
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct DeleteAssetFormRequest {
+    /// The asset ID to delete
+    pub asset_id: Uuid,
+}
+
 #[utoipa::path(
     context_path = "/api",
     tag = "Asset Service",
@@ -155,10 +162,18 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
         (status = 204, description = "Asset deleted successfully"),
         (status = 404, description = "Asset not found", body = ErrorResponse),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
+    ),
+    params(
+        ("id" = Uuid, Path, description = "ID of the asset to delete")
     )
 )]
 pub async fn delete_asset(id: Path<Uuid>, data: web::Data<AppState>) -> impl Responder {
     let asset_id_to_delete = id.into_inner();
+    delete_asset_by_id(asset_id_to_delete, data).await
+}
+
+/// Common function to delete asset by ID, can be used by both path parameter and form data endpoints
+async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>) -> impl Responder {
     info!(
         "Executing delete_asset handler for ID: {:?}",
         asset_id_to_delete
@@ -243,6 +258,26 @@ pub async fn delete_asset(id: Path<Uuid>, data: web::Data<AppState>) -> impl Res
                 .json(ErrorResponse::internal_error("Failed to retrieve asset"))
         }
     }
+}
+
+#[utoipa::path(
+    context_path = "/api",
+    tag = "Asset Service",
+    post,
+    path = "/assets/delete-by-form",
+    request_body(content = inline(DeleteAssetFormRequest), content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 204, description = "Asset deleted successfully"),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Asset not found", body = ErrorResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
+    )
+)]
+pub async fn delete_asset_by_form(
+    form: actix_web::web::Form<DeleteAssetFormRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    delete_asset_by_id(form.asset_id, data).await
 }
 
 #[utoipa::path(
