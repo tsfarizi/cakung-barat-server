@@ -261,7 +261,7 @@ pub async fn get_asset_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> impl 
     let asset_id = id.into_inner();
     info!("Executing get_asset_by_id handler for ID: {:?}", asset_id);
     debug!(
-        "Attempting to fetch item with ID {:?} from 'assets' table.",
+        "Received GET request to /assets/{:?} - this endpoint only supports GET and DELETE methods",
         asset_id
     );
     match data.get_asset_by_id(&asset_id).await {

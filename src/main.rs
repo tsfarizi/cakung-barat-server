@@ -161,13 +161,13 @@ async fn main() -> std::io::Result<()> {
                             .route(web::get().to(asset::handlers::list_folder_handler)),
                     )
                     .service(
+                        web::resource("/assets/by-ids")
+                            .route(web::post().to(asset::handlers::get_assets_by_ids)),
+                    )
+                    .service(
                         web::resource("/assets/{id}")
                             .route(web::get().to(asset::handlers::get_asset_by_id))
                             .route(web::delete().to(asset::handlers::delete_asset)),
-                    )
-                    .service(
-                        web::resource("/assets/by-ids")
-                            .route(web::post().to(asset::handlers::get_assets_by_ids)),
                     )
 
             )
