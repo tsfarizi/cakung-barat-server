@@ -3,27 +3,28 @@ use actix_web::{
     web::{self, Path},
 };
 use log::{debug, error, info};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::asset::models::Asset;
 use crate::{
     ErrorResponse,
     db::AppState,
-    posting::models::{CreatePostingRequest, Posting, UpdatePostingRequest},
+    posting::models::{CreatePostingRequest, Post, UpdatePostingRequest},
 };
 use chrono::NaiveDate;
 use uuid::Uuid;
 
-
-
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PostingResponse {
     pub id: Uuid,
-    pub judul: String,
-    pub tanggal: NaiveDate,
-    pub detail: String,
-    pub assets: Vec<Asset>,
+    pub title: String,
+    pub category: String,
+    pub date: NaiveDate,
+    pub excerpt: String,
+    pub img: Option<Vec<Uuid>>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub asset_ids: Vec<Uuid>,  // Added for asset associations
 }
 
 
@@ -34,66 +35,25 @@ pub struct PostingResponse {
     get,
     path = "/postings",
     responses(
-        (status = 200, description = "List of all postings", body = [PostingResponse]),
+        (status = 200, description = "List of all posts", body = [Post]),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
 )]
 pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
     info!("Executing get_all_postings handler");
-    debug!("Attempting to fetch all postings with their associated assets.");
-    match data.get_all_postings_with_assets().await {
-        Ok(postings) => {
+    debug!("Attempting to fetch all posts.");
+    match data.get_all_posts().await {
+        Ok(posts) => {
             info!(
-                "Successfully fetched {} postings from the database.",
-                postings.len()
+                "Successfully fetched {} posts from the database.",
+                posts.len()
             );
-            debug!("Hydrating posting responses with their associated assets.");
-
-            // 1. Kumpulkan SEMUA asset_id unik dari SEMUA posting
-            let all_asset_ids: Vec<Uuid> = postings.iter()
-                .flat_map(|p| p.asset_ids.iter())
-                .cloned()
-                .collect::<std::collections::HashSet<Uuid>>() // Otomatis deduplikasi
-                .into_iter()
-                .collect();
-
-            // 2. Panggil fungsi batch-fetching BARU (satu query)
-            let all_assets = match data.get_assets_by_ids(&all_asset_ids).await {
-                Ok(assets) => assets,
-                Err(e) => {
-                    error!("Failed to batch fetch assets: {}", e);
-                    return HttpResponse::InternalServerError()
-                        .json(ErrorResponse::internal_error("Failed to retrieve assets"));
-                }
-            };
-
-            // 3. Buat HashMap untuk pencarian cepat di memori (O(1))
-            let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
-                .map(|a| (a.id, a))
-                .collect();
-
-            // 4. Bangun respons dengan me-lookup dari HashMap (bukan query DB)
-            let response: Vec<PostingResponse> = postings.iter().map(|posting| {
-                let assets_for_this_posting: Vec<Asset> = posting.asset_ids.iter()
-                    .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
-                    .collect();
-
-                PostingResponse {
-                    id: posting.id,
-                    judul: posting.judul.clone(),
-                    tanggal: posting.tanggal,
-                    detail: posting.detail.clone(),
-                    assets: assets_for_this_posting,
-                }
-            }).collect();
-
-            info!("Successfully hydrated all posting responses.");
-            HttpResponse::Ok().json(response)
+            HttpResponse::Ok().json(posts)
         }
         Err(e) => {
-            error!("Failed to get all postings from database: {}", e);
+            error!("Failed to get all posts from database: {}", e);
             HttpResponse::InternalServerError()
-                .json(ErrorResponse::internal_error("Failed to retrieve postings"))
+                .json(ErrorResponse::internal_error("Failed to retrieve posts"))
         }
     }
 }
@@ -104,85 +64,40 @@ pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
     get,
     path = "/postings/{id}",
     responses(
-        (status = 200, description = "Posting found", body = PostingResponse),
-        (status = 404, description = "Posting not found", body = ErrorResponse),
+        (status = 200, description = "Post found", body = Post),
+        (status = 404, description = "Post not found", body = ErrorResponse),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     ),
     params(
-        ("id" = Uuid, Path, description = "ID of the posting to retrieve")
+        ("id" = Uuid, Path, description = "ID of the post to retrieve")
     )
 )]
 pub async fn get_posting_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> impl Responder {
-    let posting_id = id.into_inner();
+    let post_id = id.into_inner();
     info!(
         "Executing get_posting_by_id handler for ID: {:?}",
-        posting_id
+        post_id
     );
-    debug!(
-        "Attempting to fetch posting with ID {:?} with associated assets.",
-        posting_id
-    );
-    match data.get_posting_by_id_with_assets(&posting_id).await {
-        Ok(Some(posting)) => {
-            info!("Successfully fetched posting with ID: {:?}", posting_id);
-            debug!("Hydrating assets for posting ID: {:?}", posting.id);
-
-            // Ambil asset_ids yang relevan dari satu posting
-            let asset_ids = &posting.asset_ids;
-
-            // Panggil fungsi batch-fetching satu kali
-            let all_assets = match data.get_assets_by_ids(asset_ids).await {
-                Ok(assets) => assets,
-                Err(e) => {
-                    error!("Failed to batch fetch assets: {}", e);
-                    return HttpResponse::InternalServerError()
-                        .json(ErrorResponse::internal_error("Failed to retrieve assets"));
-                }
-            };
-
-            // Buat HashMap untuk pencarian cepat di memori (O(1))
-            let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
-                .map(|a| (a.id, a))
-                .collect();
-
-            // Bangun respons dengan me-lookup dari HashMap (bukan query DB)
-            let assets: Vec<Asset> = posting.asset_ids.iter()
-                .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
-                .collect();
-
-            debug!(
-                "Found {} assets for posting ID: {:?}",
-                assets.len(),
-                posting.id
-            );
-
-            let response = PostingResponse {
-                id: posting.id,
-                judul: posting.judul.clone(),
-                tanggal: posting.tanggal,
-                detail: posting.detail.clone(),
-                assets,
-            };
-            info!(
-                "Successfully hydrated posting response for ID: {:?}",
-                posting_id
-            );
-            HttpResponse::Ok().json(response)
+    debug!("Attempting to fetch post with ID {:?}.", post_id);
+    match data.get_post_by_id(&post_id).await {
+        Ok(Some(post)) => {
+            info!("Successfully fetched post with ID: {:?}", post_id);
+            HttpResponse::Ok().json(post)
         }
         Ok(None) => {
-            error!("Posting not found in database for ID: {:?}", posting_id);
+            error!("Post not found in database for ID: {:?}", post_id);
             HttpResponse::NotFound().json(ErrorResponse::not_found(&format!(
-                "Posting with ID {:?} not found",
-                posting_id
+                "Post with ID {:?} not found",
+                post_id
             )))
         }
         Err(e) => {
             error!(
-                "Failed to get posting by ID '{}' from database: {}",
-                posting_id, e
+                "Failed to get post by ID '{}' from database: {}",
+                post_id, e
             );
             HttpResponse::InternalServerError()
-                .json(ErrorResponse::internal_error("Failed to retrieve posting"))
+                .json(ErrorResponse::internal_error("Failed to retrieve post"))
         }
     }
 }
@@ -194,7 +109,7 @@ pub async fn get_posting_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> imp
     path = "/postings",
     request_body = CreatePostingRequest,
     responses(
-        (status = 201, description = "Posting created successfully", body = PostingResponse),
+        (status = 201, description = "Post created successfully", body = Post),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     )
@@ -204,88 +119,25 @@ pub async fn create_posting(
     data: web::Data<AppState>,
 ) -> impl Responder {
     info!("Executing create_posting handler");
-    let asset_ids = req.asset_ids.clone().unwrap_or_default();
-    debug!(
-        "Received request to create posting with {} asset IDs.",
-        asset_ids.len()
+    debug!("Received request to create post.");
+
+    let new_post = Post::new(
+        req.title.clone(),
+        req.category.clone(),
+        req.excerpt.clone(),
+        req.img.clone(),
     );
 
-    for id in &asset_ids {
-        debug!("Validating asset with ID: {:?}", id);
-        match data.get_asset_by_id(id).await {
-            Ok(Some(_)) => {
-                debug!("Asset validation successful for ID: {:?}", id);
-            }
-            Ok(None) => {
-                let msg = format!("Asset with ID {:?} not found", id);
-                error!("Asset validation failed: {}", &msg);
-                return HttpResponse::BadRequest().json(ErrorResponse::bad_request(&msg));
-            }
-            Err(e) => {
-                error!(
-                    "Database error during asset validation for ID {:?}: {}",
-                    id, e
-                );
-                return HttpResponse::InternalServerError()
-                    .json(ErrorResponse::internal_error("Failed to validate asset"));
-            }
-        }
-    }
-    info!("All assets validated successfully.");
-
-    let current_date = ::chrono::Utc::now().date_naive();
-    let mut new_posting = Posting::new(
-        req.judul.clone(),
-        req.detail.clone(),
-        asset_ids.clone(),
-    );
-    new_posting.tanggal = current_date;
-
-    debug!("Attempting to upsert new posting with assets into database.");
-    if let Err(e) = data.upsert_posting_with_assets(&new_posting).await {
-        error!("Failed to upsert new posting into database: {}", e);
+    debug!("Attempting to insert new post into database.");
+    if let Err(e) = data.insert_post(&new_post).await {
+        error!("Failed to insert new post into database: {}", e);
         return HttpResponse::InternalServerError()
-            .json(ErrorResponse::internal_error("Failed to create posting"));
+            .json(ErrorResponse::internal_error("Failed to create post"));
     }
 
-    info!("New posting created successfully with ID: {:?}", new_posting.id);
-
-    debug!("Hydrating response for new posting.");
-
-    // Ambil asset_ids yang relevan dari posting baru
-    let asset_ids = &new_posting.asset_ids;
-
-    // Panggil fungsi batch-fetching satu kali
-    let all_assets = match data.get_assets_by_ids(asset_ids).await {
-        Ok(assets) => assets,
-        Err(e) => {
-            error!("Failed to batch fetch assets: {}", e);
-            return HttpResponse::InternalServerError()
-                .json(ErrorResponse::internal_error("Failed to retrieve assets"));
-        }
-    };
-
-    // Buat HashMap untuk pencarian cepat di memori (O(1))
-    let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
-        .map(|a| (a.id, a))
-        .collect();
-
-    // Bangun respons dengan me-lookup dari HashMap (bukan query DB)
-    let assets: Vec<Asset> = new_posting.asset_ids.iter()
-        .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
-        .collect();
-
-    let response = PostingResponse {
-        id: new_posting.id,
-        judul: new_posting.judul,
-        tanggal: new_posting.tanggal,
-        detail: new_posting.detail,
-        assets,
-    };
-
-    HttpResponse::Created().json(response)
+    info!("New post created successfully with ID: {:?}", new_post.id);
+    HttpResponse::Created().json(new_post)
 }
-
 #[utoipa::path(
     context_path = "/api",
     tag = "Posting Service",
@@ -293,13 +145,13 @@ pub async fn create_posting(
     path = "/postings/{id}",
     request_body = UpdatePostingRequest,
     responses(
-        (status = 200, description = "Posting updated successfully", body = PostingResponse),
+        (status = 200, description = "Post updated successfully", body = Post),
         (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Posting not found", body = ErrorResponse),
+        (status = 404, description = "Post not found", body = ErrorResponse),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     ),
     params(
-        ("id" = Uuid, Path, description = "ID of the posting to update")
+        ("id" = Uuid, Path, description = "ID of the post to update")
     )
 )]
 pub async fn update_posting(
@@ -307,150 +159,101 @@ pub async fn update_posting(
     req: web::Json<UpdatePostingRequest>,
     data: web::Data<AppState>,
 ) -> impl Responder {
-    let posting_id = id.into_inner();
-    info!("Executing update_posting handler for ID: {:?}", posting_id);
+    let post_id = id.into_inner();
+    info!("Executing update_posting handler for ID: {:?}", post_id);
 
     debug!(
-        "Attempting to fetch posting with ID {:?} for update.",
-        posting_id
+        "Attempting to fetch post with ID {:?} for update.",
+        post_id
     );
-    match data.get_posting_by_id_with_assets(&posting_id).await {
-        Ok(Some(mut posting)) => {
+    match data.get_post_by_id(&post_id).await {
+        Ok(Some(mut post)) => {
             info!(
-                "Found posting with ID {:?}. Proceeding with update.",
-                posting_id
+                "Found post with ID {:?}. Proceeding with update.",
+                post_id
             );
-            if let Some(judul) = &req.judul {
-                debug!("Updating posting title for id: {:?}", posting_id);
-                posting.judul = judul.clone();
+            if let Some(title) = &req.title {
+                debug!("Updating post title for id: {:?}", post_id);
+                post.title = title.clone();
             }
-            if let Some(detail) = &req.detail {
-                debug!("Updating posting detail for id: {:?}", posting_id);
-                posting.detail = detail.clone();
+            if let Some(category) = &req.category {
+                debug!("Updating post category for id: {:?}", post_id);
+                post.category = category.clone();
             }
-            if let Some(asset_ids) = &req.asset_ids {
-                debug!("Validating asset IDs for update.");
-                for id in asset_ids {
-                    match data.get_asset_by_id(id).await {
-                        Ok(Some(_)) => (),
-                        Ok(None) => {
-                            let msg = format!("Asset with ID {:?} not found", id);
-                            error!("Asset validation failed during update: {}", &msg);
-                            return HttpResponse::BadRequest()
-                                .json(ErrorResponse::bad_request(&msg));
-                        }
-                        Err(e) => {
-                            error!(
-                                "Database error during asset validation for ID {:?}: {}",
-                                id, e
-                            );
-                            return HttpResponse::InternalServerError()
-                                .json(ErrorResponse::internal_error("Failed to validate asset"));
-                        }
-                    }
-                }
-                debug!("Updating posting asset IDs for id: {:?}", posting_id);
-                posting.asset_ids = asset_ids.clone();
+            if let Some(excerpt) = &req.excerpt {
+                debug!("Updating post excerpt for id: {:?}", post_id);
+                post.excerpt = excerpt.clone();
+            }
+            if let Some(img) = &req.img {
+                debug!("Updating post img for id: {:?}", post_id);
+                post.img = Some(img.clone());
             }
 
             debug!(
-                "Attempting to upsert updated posting with ID {:?} into database.",
-                posting_id
+                "Attempting to update post with ID {:?} in database.",
+                post_id
             );
-            if let Err(e) = data.upsert_posting_with_assets(&posting).await {
-                error!("Failed to update posting in database: {}", e);
+            if let Err(e) = data.update_post(&post).await {
+                error!("Failed to update post in database: {}", e);
                 return HttpResponse::InternalServerError()
-                    .json(ErrorResponse::internal_error("Failed to update posting"));
+                    .json(ErrorResponse::internal_error("Failed to update post"));
             }
 
-            debug!("Hydrating response for updated posting.");
-
-            // Ambil asset_ids yang relevan dari posting yang telah diperbarui
-            let asset_ids = &posting.asset_ids;
-
-            // Panggil fungsi batch-fetching satu kali
-            let all_assets = match data.get_assets_by_ids(asset_ids).await {
-                Ok(assets) => assets,
-                Err(e) => {
-                    error!("Failed to batch fetch assets: {}", e);
-                    return HttpResponse::InternalServerError()
-                        .json(ErrorResponse::internal_error("Failed to retrieve assets"));
-                }
-            };
-
-            // Buat HashMap untuk pencarian cepat di memori (O(1))
-            let asset_map: std::collections::HashMap<Uuid, Asset> = all_assets.into_iter()
-                .map(|a| (a.id, a))
-                .collect();
-
-            // Bangun respons dengan me-lookup dari HashMap (bukan query DB)
-            let assets: Vec<Asset> = posting.asset_ids.iter()
-                .filter_map(|id| asset_map.get(id).cloned()) // Ambil dari map
-                .collect();
-
-            let response = PostingResponse {
-                id: posting.id,
-                judul: posting.judul.clone(),
-                tanggal: posting.tanggal,
-                detail: posting.detail.clone(),
-                assets,
-            };
-            info!("Posting with id: {:?} updated successfully", posting_id);
-            HttpResponse::Ok().json(response)
+            info!("Post with id: {:?} updated successfully", post_id);
+            HttpResponse::Ok().json(post)
         }
         Ok(None) => {
-            error!("Posting not found for update: {:?}", posting_id);
+            error!("Post not found for update: {:?}", post_id);
             HttpResponse::NotFound().json(ErrorResponse::not_found(&format!(
-                "Posting with ID {:?} not found",
-                posting_id
+                "Post with ID {:?} not found",
+                post_id
             )))
         }
         Err(e) => {
-            error!("Failed to retrieve posting for update from database: {}", e);
+            error!("Failed to retrieve post for update from database: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse::internal_error(
-                "Failed to retrieve posting for update",
+                "Failed to retrieve post for update",
             ))
         }
     }
 }
-
 #[utoipa::path(
     context_path = "/api",
     tag = "Posting Service",
     delete,
     path = "/postings/{id}",
     responses(
-        (status = 204, description = "Posting deleted successfully"),
-        (status = 404, description = "Posting not found", body = ErrorResponse),
+        (status = 204, description = "Post deleted successfully"),
+        (status = 404, description = "Post not found", body = ErrorResponse),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
     ),
     params(
-        ("id" = Uuid, Path, description = "ID of the posting to delete")
+        ("id" = Uuid, Path, description = "ID of the post to delete")
     )
 )]
 pub async fn delete_posting(id: Path<Uuid>, data: web::Data<AppState>) -> impl Responder {
-    let posting_id = id.into_inner();
-    info!("Executing delete_posting handler for ID: {:?}", posting_id);
+    let post_id = id.into_inner();
+    info!("Executing delete_posting handler for ID: {:?}", post_id);
 
     debug!(
-        "Attempting to delete posting with ID {:?} from database.",
-        posting_id
+        "Attempting to delete post with ID {:?} from database.",
+        post_id
     );
-    match data.delete_posting(&posting_id).await {
+    match data.delete_post(&post_id).await {
         Ok(_) => {
             info!(
-                "Posting with id: {:?} deleted successfully from database.",
-                posting_id
+                "Post with id: {:?} deleted successfully from database.",
+                post_id
             );
             HttpResponse::NoContent().finish()
         }
         Err(e) => {
             error!(
-                "Failed to delete posting with ID {:?} from database: {}",
-                posting_id, e
+                "Failed to delete post with ID {:?} from database: {}",
+                post_id, e
             );
             HttpResponse::InternalServerError()
-                .json(ErrorResponse::internal_error("Failed to delete posting"))
+                .json(ErrorResponse::internal_error("Failed to delete post"))
         }
     }
 }

@@ -75,15 +75,18 @@ async fn main() -> std::io::Result<()> {
             asset::handlers::get_all_assets_structured,
             asset::handlers::create_folder_handler,
             asset::handlers::list_folder_handler,
+            asset::handlers::get_assets_by_ids,
         ),
         components(
             schemas(
                 posting::models::Posting,
+                posting::models::Post,
                 asset::models::Asset,
                 posting::models::CreatePostingRequest,
                 posting::models::UpdatePostingRequest,
                 asset::handlers::UploadAssetRequest,
                 asset::handlers::CreateFolderRequest,
+                asset::handlers::GetAssetsByIdsRequest,
                 posting::handlers::PostingResponse,
                 asset::handlers::AllAssetsResponse,
                 asset::handlers::FolderWithAssets,
@@ -161,6 +164,10 @@ async fn main() -> std::io::Result<()> {
                         web::resource("/assets/{id}")
                             .route(web::get().to(asset::handlers::get_asset_by_id))
                             .route(web::delete().to(asset::handlers::delete_asset)),
+                    )
+                    .service(
+                        web::resource("/assets/by-ids")
+                            .route(web::post().to(asset::handlers::get_assets_by_ids)),
                     )
 
             )

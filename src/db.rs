@@ -20,8 +20,9 @@ impl AppState {
     }
 
     // Asset-related functions
-    pub async fn get_asset_by_id(&self, _id: &Uuid) -> Result<Option<crate::asset::models::Asset>, sqlx::Error> {
+    pub async fn get_asset_by_id(&self, id: &Uuid) -> Result<Option<crate::asset::models::Asset>, sqlx::Error> {
         sqlx::query_as("SELECT id, name, filename, url, description, created_at, updated_at FROM assets WHERE id = $1")
+            .bind(id)
             .fetch_optional(&self.pool)
             .await
     }
@@ -31,13 +32,14 @@ impl AppState {
             .fetch_all(&self.pool)
             .await
     }
-
+    
+    #[allow(dead_code)]
     pub async fn get_assets_by_ids(&self, ids: &Vec<Uuid>) -> Result<Vec<crate::asset::models::Asset>, sqlx::Error> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        sqlx::query_as("SELECT * FROM assets WHERE id = ANY($1)")
+        sqlx::query_as("SELECT id, name, filename, url, description, created_at, updated_at FROM assets WHERE id = ANY($1)")
             .bind(ids)
             .fetch_all(&self.pool)
             .await
@@ -72,92 +74,268 @@ impl AppState {
     }
 
     // Posting-related functions
-    pub async fn get_posting_by_id_with_assets(&self, id: &Uuid) -> Result<Option<crate::posting::models::Posting>, sqlx::Error> {
-        let mut posting: crate::posting::models::Posting = match sqlx::query_as("SELECT id, judul, tanggal, detail, created_at, updated_at FROM postings WHERE id = $1")
+    pub async fn get_post_by_id(&self, id: &Uuid) -> Result<Option<crate::posting::models::Post>, sqlx::Error> {
+        // First get the post details
+        let post_row = sqlx::query("SELECT id, title, category, date, excerpt, created_at, updated_at FROM posts WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
-            .await? {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-
-        let asset_rows = sqlx::query("SELECT asset_id FROM posting_assets WHERE posting_id = $1")
-            .bind(id)
-            .fetch_all(&self.pool)
             .await?;
-
-        let asset_ids: Vec<Uuid> = asset_rows.into_iter().map(|row| row.get::<Uuid, _>("asset_id")).collect();
-        
-        posting.asset_ids = asset_ids;
-        Ok(Some(posting))
+            
+        if let Some(row) = post_row {
+            // Get associated asset IDs for images
+            let img_ids: Vec<Uuid> = sqlx::query("SELECT asset_id FROM post_images WHERE post_id = $1 ORDER BY sort_order")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|r| r.get::<Uuid, _>("asset_id"))
+                .collect();
+                
+            let img = if img_ids.is_empty() { None } else { Some(img_ids) };
+            
+            Ok(Some(crate::posting::models::Post {
+                id: row.get("id"),
+                title: row.get("title"),
+                category: row.get("category"),
+                date: row.get("date"),
+                excerpt: row.get("excerpt"),
+                img,
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub async fn get_all_postings_with_assets(&self) -> Result<Vec<crate::posting::models::Posting>, sqlx::Error> {
-        let mut postings: Vec<crate::posting::models::Posting> = sqlx::query_as("SELECT id, judul, tanggal, detail, created_at, updated_at FROM postings ORDER BY created_at DESC")
+    pub async fn get_all_posts(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
+        // First get all posts
+        let posts = sqlx::query("SELECT id, title, category, date, excerpt, created_at, updated_at FROM posts ORDER BY created_at DESC")
             .fetch_all(&self.pool)
             .await?;
-        
-        let relation_rows = sqlx::query("SELECT posting_id, asset_id FROM posting_assets")
-            .fetch_all(&self.pool)
-            .await?;
-        
-        // Map relations to postings
-        for posting in postings.iter_mut() {
-            posting.asset_ids = relation_rows.iter()
-                .filter(|rel| rel.get::<Uuid, _>("posting_id") == posting.id)
-                .map(|rel| rel.get::<Uuid, _>("asset_id"))
+            
+        let mut result = Vec::new();
+        for post_row in posts {
+            let post_id: Uuid = post_row.get("id");
+            
+            // Get associated asset IDs for images
+            let img_ids: Vec<Uuid> = sqlx::query("SELECT asset_id FROM post_images WHERE post_id = $1 ORDER BY sort_order")
+                .bind(&post_id)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|r| r.get::<Uuid, _>("asset_id"))
                 .collect();
+                
+            let img = if img_ids.is_empty() { None } else { Some(img_ids) };
+            
+            result.push(crate::posting::models::Post {
+                id: post_row.get("id"),
+                title: post_row.get("title"),
+                category: post_row.get("category"),
+                date: post_row.get("date"),
+                excerpt: post_row.get("excerpt"),
+                img,
+                created_at: post_row.get("created_at"),
+                updated_at: post_row.get("updated_at"),
+            });
         }
-        Ok(postings)
+        
+        Ok(result)
+    }
+
+    pub async fn insert_post(&self, post: &crate::posting::models::Post) -> Result<(), sqlx::Error> {
+        // Insert the post record
+        sqlx::query(
+            "INSERT INTO posts (id, title, category, date, excerpt, created_at, updated_at) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7)")
+        .bind(post.id)
+        .bind(&post.title)
+        .bind(&post.category)
+        .bind(post.date)
+        .bind(&post.excerpt)
+        .bind(post.created_at)
+        .bind(post.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        // Insert associated image asset IDs if any
+        if let Some(img_ids) = &post.img {
+            for (index, img_id) in img_ids.iter().enumerate() {
+                sqlx::query("INSERT INTO post_images (post_id, asset_id, sort_order) VALUES ($1, $2, $3)")
+                    .bind(post.id)
+                    .bind(img_id)
+                    .bind(index as i32)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_post(&self, post: &crate::posting::models::Post) -> Result<(), sqlx::Error> {
+        // Update the post record
+        sqlx::query(
+            "UPDATE posts 
+             SET title = $2, category = $3, date = $4, excerpt = $5, updated_at = $6 
+             WHERE id = $1")
+        .bind(post.id)
+        .bind(&post.title)
+        .bind(&post.category)
+        .bind(post.date)
+        .bind(&post.excerpt)
+        .bind(post.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        // Remove existing image associations
+        sqlx::query("DELETE FROM post_images WHERE post_id = $1")
+            .bind(post.id)
+            .execute(&self.pool)
+            .await?;
+
+        // Insert new image associations if any
+        if let Some(img_ids) = &post.img {
+            for (index, img_id) in img_ids.iter().enumerate() {
+                sqlx::query("INSERT INTO post_images (post_id, asset_id, sort_order) VALUES ($1, $2, $3)")
+                    .bind(post.id)
+                    .bind(img_id)
+                    .bind(index as i32)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete_post(&self, id: &Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM posts WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    // Posting with assets-related functions
+    pub async fn get_posting_by_id_with_assets(&self, id: &Uuid) -> Result<Option<crate::posting::models::Posting>, sqlx::Error> {
+        // First, get the post
+        let post = self.get_post_by_id(id).await?;
+        
+        if let Some(post) = post {
+            // Get the associated asset IDs
+            let asset_ids = sqlx::query("SELECT asset_id FROM posting_assets WHERE posting_id = $1")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<Uuid, _>("asset_id"))
+                .collect();
+            
+            // Create and return the posting with asset_ids
+            let posting = crate::posting::models::Posting {
+                id: post.id,
+                title: post.title,
+                category: post.category,
+                date: post.date,
+                excerpt: post.excerpt,
+                img: post.img,
+                created_at: post.created_at,
+                updated_at: post.updated_at,
+                asset_ids,
+            };
+            
+            Ok(Some(posting))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn upsert_posting_with_assets(&self, posting: &crate::posting::models::Posting) -> Result<(), sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+        // First, save or update the post itself
+        match self.get_post_by_id(&posting.id).await {
+            Ok(Some(_)) => {
+                // Post exists, update it
+                let post = crate::posting::models::Post {
+                    id: posting.id,
+                    title: posting.title.clone(),
+                    category: posting.category.clone(),
+                    date: posting.date,
+                    excerpt: posting.excerpt.clone(),
+                    img: posting.img.clone(),
+                    created_at: posting.created_at,
+                    updated_at: Some(chrono::Utc::now()),
+                };
+                self.update_post(&post).await?;
+            }
+            Ok(None) | Err(_) => {
+                // Post doesn't exist, insert it
+                let post = crate::posting::models::Post {
+                    id: posting.id,
+                    title: posting.title.clone(),
+                    category: posting.category.clone(),
+                    date: posting.date,
+                    excerpt: posting.excerpt.clone(),
+                    img: posting.img.clone(),
+                    created_at: Some(chrono::Utc::now()),
+                    updated_at: Some(chrono::Utc::now()),
+                };
+                self.insert_post(&post).await?;
+            }
+        }
 
-        sqlx::query(
-            "INSERT INTO postings (id, judul, tanggal, detail, created_at, updated_at) 
-             VALUES ($1, $2, $3, $4, $5, $6) 
-             ON CONFLICT (id) DO UPDATE 
-             SET judul = $2, tanggal = $3, detail = $4, updated_at = $6")
-        .bind(posting.id)
-        .bind(&posting.judul)
-        .bind(posting.tanggal)
-        .bind(&posting.detail)
-        .bind(posting.created_at)
-        .bind(posting.updated_at)
-        .execute(&mut *tx)
-        .await?;
-
+        // Update the asset associations
+        // First delete existing associations
         sqlx::query("DELETE FROM posting_assets WHERE posting_id = $1")
-            .bind(posting.id)
-            .execute(&mut *tx)
+            .bind(&posting.id)
+            .execute(&self.pool)
             .await?;
-        
+
+        // Then insert new associations
         for asset_id in &posting.asset_ids {
             sqlx::query("INSERT INTO posting_assets (posting_id, asset_id) VALUES ($1, $2)")
-                .bind(posting.id)
+                .bind(&posting.id)
                 .bind(asset_id)
-                .execute(&mut *tx)
+                .execute(&self.pool)
                 .await?;
         }
 
-        tx.commit().await
+        Ok(())
     }
 
-    pub async fn delete_posting(&self, id: &Uuid) -> Result<(), sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+    pub async fn get_all_postings_with_assets(&self) -> Result<Vec<crate::posting::models::Posting>, sqlx::Error> {
+        // Get all posts first
+        let posts = self.get_all_posts().await?;
 
-        sqlx::query("DELETE FROM posting_assets WHERE posting_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        // For each post, get associated asset IDs
+        let mut postings = Vec::new();
+        for post in posts {
+            let asset_ids = sqlx::query("SELECT asset_id FROM posting_assets WHERE posting_id = $1")
+                .bind(&post.id)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<Uuid, _>("asset_id"))
+                .collect();
+            
+            let posting = crate::posting::models::Posting {
+                id: post.id,
+                title: post.title,
+                category: post.category,
+                date: post.date,
+                excerpt: post.excerpt,
+                img: post.img,
+                created_at: post.created_at,
+                updated_at: post.updated_at,
+                asset_ids,
+            };
+            
+            postings.push(posting);
+        }
 
-        sqlx::query("DELETE FROM postings WHERE id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        tx.commit().await
+        Ok(postings)
     }
 
     // Folder-related functions

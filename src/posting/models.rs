@@ -4,54 +4,81 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema, sqlx::FromRow)]
+pub struct Post {
+    #[schema(example = "f1e2d3c4-b5a6-7890-1234-567890abcdef")]
+    pub id: Uuid,
+    #[schema(example = "Judul Posting")]
+    pub title: String,
+    #[schema(example = "Kategori Posting")]
+    pub category: String,
+    #[schema(example = "2025-11-05")]
+    pub date: NaiveDate,
+    #[schema(
+        example = "Ini adalah ringkasan postingan."
+    )]
+    pub excerpt: String,
+    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef", "f1e2d3c4-b5a6-7890-1234-567890abcdef"]))]
+    pub img: Option<Vec<Uuid>>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct Posting {
     #[schema(example = "f1e2d3c4-b5a6-7890-1234-567890abcdef")]
     pub id: Uuid,
     #[schema(example = "Judul Posting")]
-    pub judul: String,
+    pub title: String,
+    #[schema(example = "Kategori Posting")]
+    pub category: String,
     #[schema(example = "2025-11-05")]
-    pub tanggal: NaiveDate,
+    pub date: NaiveDate,
     #[schema(
-        example = "## Detail Posting\n\nIni adalah detail posting dengan gambar: ![gambar](https://example.com/assets/image.png)"
+        example = "Ini adalah ringkasan postingan."
     )]
-    pub detail: String,
-    #[serde(default)]
-    #[sqlx(skip)]
-    pub asset_ids: Vec<Uuid>,
+    pub excerpt: String,
+    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef", "f1e2d3c4-b5a6-7890-1234-567890abcdef"]))]
+    pub img: Option<Vec<Uuid>>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+    pub asset_ids: Vec<Uuid>, // For asset associations
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreatePostingRequest {
     #[schema(example = "Judul Posting Baru")]
-    pub judul: String,
-    #[schema(example = "## Detail Posting Baru\n\nIni adalah detail posting baru.")]
-    pub detail: String,
-    pub asset_ids: Option<Vec<Uuid>>,
+    pub title: String,
+    #[schema(example = "Kategori Posting Baru")]
+    pub category: String,
+    #[schema(example = "Ini adalah ringkasan postingan baru.")]
+    pub excerpt: String,
+    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef"]))]
+    pub img: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdatePostingRequest {
     #[schema(example = "Judul Posting Diperbarui")]
-    pub judul: Option<String>,
-    #[schema(
-        example = "## Detail Posting Diperbarui\n\nIni adalah detail posting yang sudah diperbarui."
-    )]
-    pub detail: Option<String>,
-    pub asset_ids: Option<Vec<Uuid>>,
+    pub title: Option<String>,
+    #[schema(example = "Kategori Posting Diperbarui")]
+    pub category: Option<String>,
+    #[schema(example = "Ini adalah ringkasan postingan yang sudah diperbarui.")]
+    pub excerpt: Option<String>,
+    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef"]))]
+    pub img: Option<Vec<Uuid>>,
 }
 
 
 
-impl Posting {
-    pub fn new(judul: String, detail: String, asset_ids: Vec<Uuid>) -> Self {
-        Posting {
+impl Post {
+    pub fn new(title: String, category: String, excerpt: String, img: Option<Vec<Uuid>>) -> Self {
+        Post {
             id: Uuid::new_v4(),
-            judul,
-            tanggal: chrono::Local::now().date_naive(),
-            detail,
-            asset_ids,
+            title,
+            category,
+            date: chrono::Local::now().date_naive(),
+            excerpt,
+            img,
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),
         }

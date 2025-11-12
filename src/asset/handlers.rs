@@ -573,3 +573,65 @@ pub struct CreateFolderRequest {
 pub struct CreateFolderForm {
     folder_name: String,
 }
+
+#[utoipa::path(
+    context_path = "/api",
+    tag = "Asset Service",
+    post,
+    path = "/assets/by-ids",
+    request_body(content = inline(GetAssetsByIdsRequest), content_type = "application/json"),
+    responses(
+        (status = 200, description = "List of assets found", body = Vec<Asset>),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
+    )
+)]
+pub async fn get_assets_by_ids(
+    req: web::Json<GetAssetsByIdsRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    info!("Executing get_assets_by_ids handler with {} IDs", req.ids.len());
+    
+    // Check for duplicate IDs and log a warning
+    let unique_ids: std::collections::HashSet<_> = req.ids.iter().collect();
+    if unique_ids.len() != req.ids.len() {
+        debug!("Duplicate IDs detected in request");
+    }
+    
+    debug!("Attempting to fetch assets for provided IDs.");
+    match data.get_assets_by_ids(&req.ids).await {
+        Ok(assets) => {
+            info!("Successfully fetched {} assets", assets.len());
+            HttpResponse::Ok().json(assets)
+        }
+        Err(e) => {
+            error!("Failed to fetch assets by IDs: {}", e);
+            HttpResponse::InternalServerError()
+                .json(ErrorResponse::internal_error("Failed to retrieve assets"))
+        }
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+pub struct GetAssetsByIdsRequest {
+    pub ids: Vec<Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+    
+    // Since proper testing requires a database connection, 
+    // we'll focus on ensuring the handler compiles correctly
+    // Comprehensive tests would require a full test database setup
+    
+    #[test]
+    fn test_get_assets_by_ids_request_struct() {
+        // Test that the request struct is properly defined
+        let ids = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let request = super::GetAssetsByIdsRequest { ids };
+        
+        // Verify we can create the struct as expected
+        assert_eq!(request.ids.len(), 2);
+    }
+}
