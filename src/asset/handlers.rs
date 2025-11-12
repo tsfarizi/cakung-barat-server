@@ -3,7 +3,7 @@ use actix_web::{
     HttpResponse, Responder,
     web::{self, Json, Path},
 };
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::collections::HashSet;
 use utoipa::ToSchema;
@@ -317,20 +317,20 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
 
     debug!("Fetching all folders and their asset associations.");
     let folder_asset_query = "
-        SELECT f.name, af.asset_id 
-        FROM folders f 
+        SELECT f.name, af.asset_id
+        FROM folders f
         LEFT JOIN asset_folders af ON f.id = af.folder_id
     ";
-    
+
     match sqlx::query(folder_asset_query).fetch_all(&data.pool).await {
         Ok(rows) => {
             let mut folder_assets_map: std::collections::HashMap<String, Vec<Uuid>> = std::collections::HashMap::new();
-            
+
             for row in rows {
                 let folder_name: String = row.get(0);
 
                 let asset_id: Option<Uuid> = row.get(1);
-                
+
                 if let Some(id) = asset_id {
                     folder_assets_map.entry(folder_name).or_default().push(id);
                     asset_ids_in_folders.insert(id);
@@ -338,14 +338,14 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
                     folder_assets_map.entry(folder_name).or_default();
                 }
             }
-            
+
             for (folder_name, asset_ids) in folder_assets_map {
                 let assets_in_folder: Vec<Asset> = all_assets
                     .iter()
                     .filter(|a| asset_ids.contains(&a.id))
                     .cloned()
                     .collect();
-                
+
                 folders_with_assets.push(FolderWithAssets {
                     name: folder_name,
                     assets: assets_in_folder,
@@ -356,7 +356,7 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
             error!("Failed to get folder-asset associations: {}", e);
         }
     }
-    
+
     info!("Processed {} folders.", folders_with_assets.len());
 
     debug!("Filtering for unassigned assets.");
@@ -590,22 +590,35 @@ pub async fn get_assets_by_ids(
     req: web::Json<GetAssetsByIdsRequest>,
     data: web::Data<AppState>,
 ) -> impl Responder {
-    info!("Executing get_assets_by_ids handler with {} IDs", req.ids.len());
-    
+    info!("Executing get_assets_by_ids handler");
+    debug!("Request received with {} IDs: {:?}", req.ids.len(), req.ids);
+
     // Check for duplicate IDs and log a warning
     let unique_ids: std::collections::HashSet<_> = req.ids.iter().collect();
     if unique_ids.len() != req.ids.len() {
         debug!("Duplicate IDs detected in request");
     }
-    
-    debug!("Attempting to fetch assets for provided IDs.");
+
+    // Log the actual IDs being processed for debugging
+    for (index, id) in req.ids.iter().enumerate() {
+        debug!("Processing ID[{}]: {}", index, id);
+    }
+
+    debug!("Attempting to fetch assets for provided IDs from database.");
     match data.get_assets_by_ids(&req.ids).await {
         Ok(assets) => {
-            info!("Successfully fetched {} assets", assets.len());
+            info!("Successfully fetched {} assets out of {} requested IDs", assets.len(), req.ids.len());
+            
+            // Log details about the fetched assets
+            for (index, asset) in assets.iter().enumerate() {
+                debug!("Fetched asset[{}]: ID={}, filename='{}'", index, asset.id, asset.filename);
+            }
+            
             HttpResponse::Ok().json(assets)
         }
         Err(e) => {
             error!("Failed to fetch assets by IDs: {}", e);
+            error!("Error details - Requested IDs: {:?}, Error: {}", req.ids, e);
             HttpResponse::InternalServerError()
                 .json(ErrorResponse::internal_error("Failed to retrieve assets"))
         }
@@ -620,17 +633,17 @@ pub struct GetAssetsByIdsRequest {
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
-    
-    // Since proper testing requires a database connection, 
+
+    // Since proper testing requires a database connection,
     // we'll focus on ensuring the handler compiles correctly
     // Comprehensive tests would require a full test database setup
-    
+
     #[test]
     fn test_get_assets_by_ids_request_struct() {
         // Test that the request struct is properly defined
         let ids = vec![Uuid::new_v4(), Uuid::new_v4()];
         let request = super::GetAssetsByIdsRequest { ids };
-        
+
         // Verify we can create the struct as expected
         assert_eq!(request.ids.len(), 2);
     }
