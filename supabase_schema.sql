@@ -11,6 +11,17 @@ CREATE TABLE IF NOT EXISTS assets (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Create posts table
+CREATE TABLE IF NOT EXISTS posts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    date DATE NOT NULL,
+    excerpt TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Create postings table
 CREATE TABLE IF NOT EXISTS postings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -19,6 +30,15 @@ CREATE TABLE IF NOT EXISTS postings (
     detail TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create post_images table for image associations with sort order
+CREATE TABLE IF NOT EXISTS post_images (
+    post_id UUID REFERENCES postings(id) ON DELETE CASCADE,
+    asset_id UUID REFERENCES assets(id) ON DELETE CASCADE,
+    sort_order INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (post_id, asset_id)
 );
 
 -- Create posting_assets junction table for many-to-many relationship
