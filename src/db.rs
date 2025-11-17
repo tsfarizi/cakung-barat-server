@@ -129,39 +129,72 @@ impl AppState {
         Ok(posts)
     }
 
-    pub async fn get_all_posts(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
-        // First get all posts
-        let posts = sqlx::query("SELECT id, title, category, date, excerpt, created_at, updated_at FROM posts ORDER BY created_at DESC")
-            .fetch_all(&self.pool)
-            .await?;
-            
+    pub async fn get_posts_paginated(&self, limit: i32, offset: i32) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
+        // Use a single query with LEFT JOIN to fetch posts and associated image IDs with pagination
+        let rows = sqlx::query(
+            "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.created_at, p.updated_at,
+                    COALESCE(array_agg(pi.asset_id ORDER BY pi.sort_order) FILTER (WHERE pi.asset_id IS NOT NULL), '{}') as img_ids
+             FROM posts p
+             LEFT JOIN post_images pi ON p.id = pi.post_id
+             GROUP BY p.id
+             ORDER BY p.created_at DESC
+             LIMIT $1 OFFSET $2"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
         let mut result = Vec::new();
-        for post_row in posts {
-            let post_id: Uuid = post_row.get("id");
-            
-            // Get associated asset IDs for images
-            let img_ids: Vec<Uuid> = sqlx::query("SELECT asset_id FROM post_images WHERE post_id = $1 ORDER BY sort_order")
-                .bind(&post_id)
-                .fetch_all(&self.pool)
-                .await?
-                .into_iter()
-                .map(|r| r.get::<Uuid, _>("asset_id"))
-                .collect();
-                
+        for row in rows {
+            let img_ids: Vec<Uuid> = row.get("img_ids");
             let img = if img_ids.is_empty() { None } else { Some(img_ids) };
-            
+
             result.push(crate::posting::models::Post {
-                id: post_row.get("id"),
-                title: post_row.get("title"),
-                category: post_row.get("category"),
-                date: post_row.get("date"),
-                excerpt: post_row.get("excerpt"),
+                id: row.get("id"),
+                title: row.get("title"),
+                category: row.get("category"),
+                date: row.get("date"),
+                excerpt: row.get("excerpt"),
                 img,
-                created_at: post_row.get("created_at"),
-                updated_at: post_row.get("updated_at"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
             });
         }
-        
+
+        Ok(result)
+    }
+
+    pub async fn get_all_posts(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
+        // Use a single query with LEFT JOIN to fetch posts and associated image IDs
+        let rows = sqlx::query(
+            "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.created_at, p.updated_at,
+                    COALESCE(array_agg(pi.asset_id ORDER BY pi.sort_order) FILTER (WHERE pi.asset_id IS NOT NULL), '{}') as img_ids
+             FROM posts p
+             LEFT JOIN post_images pi ON p.id = pi.post_id
+             GROUP BY p.id
+             ORDER BY p.created_at DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            let img_ids: Vec<Uuid> = row.get("img_ids");
+            let img = if img_ids.is_empty() { None } else { Some(img_ids) };
+
+            result.push(crate::posting::models::Post {
+                id: row.get("id"),
+                title: row.get("title"),
+                category: row.get("category"),
+                date: row.get("date"),
+                excerpt: row.get("excerpt"),
+                img,
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            });
+        }
+
         Ok(result)
     }
 

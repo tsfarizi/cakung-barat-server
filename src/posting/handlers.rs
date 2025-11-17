@@ -1,6 +1,6 @@
 use actix_web::{
     HttpResponse, Responder,
-    web::{self, Path},
+    web::{self, Path, Query},
 };
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,23 @@ pub struct PostingResponse {
     pub asset_ids: Vec<Uuid>,  // Added for asset associations
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PaginationParams {
+    #[serde(default = "default_page")]
+    pub page: i32,
+
+    #[serde(default = "default_limit")]
+    pub limit: i32,
+}
+
+fn default_page() -> i32 {
+    1
+}
+
+fn default_limit() -> i32 {
+    20
+}
+
 
 
 #[utoipa::path(
@@ -35,25 +52,71 @@ pub struct PostingResponse {
     get,
     path = "/postings",
     responses(
-        (status = 200, description = "List of all posts", body = [Post]),
+        (status = 200, description = "List of posts with pagination", body = [Post]),
         (status = 500, description = "Internal Server Error", body = ErrorResponse)
+    ),
+    params(
+        ("page" = Option<i32>, Query, description = "Page number (default: 1)"),
+        ("limit" = Option<i32>, Query, description = "Number of items per page (default: 20)")
     )
 )]
-pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
-    info!("Executing get_all_postings handler");
-    debug!("Attempting to fetch all posts.");
-    match data.get_all_posts_cached().await {
-        Ok(posts) => {
-            info!(
-                "Successfully fetched {} posts from the database.",
-                posts.len()
-            );
-            HttpResponse::Ok().json(posts)
+pub async fn get_all_postings(data: web::Data<AppState>, pagination: Query<PaginationParams>) -> impl Responder {
+    info!("Executing get_all_postings handler with pagination");
+    debug!("Attempting to fetch posts with pagination: page={}, limit={}", pagination.page, pagination.limit);
+
+    // Calculate offset
+    let offset = (pagination.page - 1) * pagination.limit;
+
+    // For the default case (page=1, limit=20) or cwhen requesting first page with small limit,
+    // use cached version to benefit from the N+1 query fix
+    if pagination.page == 1 && pagination.limit <= 50 {
+        match data.get_all_posts_cached().await {
+            Ok(posts) => {
+                info!(
+                    "Successfully fetched {} posts from cache and applying pagination.",
+                    posts.len()
+                );
+                // Apply pagination manually to cached results for first page
+                let paginated_posts: Vec<crate::posting::models::Post> = posts.into_iter()
+                    .skip(offset as usize)
+                    .take(pagination.limit as usize)
+                    .collect();
+                HttpResponse::Ok().json(paginated_posts)
+            }
+            Err(e) => {
+                error!("Failed to get posts from cache, falling back to database: {}", e);
+                // Fallback to paginated query
+                match data.get_posts_paginated(pagination.limit, offset).await {
+                    Ok(posts) => {
+                        info!(
+                            "Successfully fetched {} posts from the database.",
+                            posts.len()
+                        );
+                        HttpResponse::Ok().json(posts)
+                    }
+                    Err(e) => {
+                        error!("Failed to get posts from database: {}", e);
+                        HttpResponse::InternalServerError()
+                            .json(ErrorResponse::internal_error("Failed to retrieve posts"))
+                    }
+                }
+            }
         }
-        Err(e) => {
-            error!("Failed to get all posts from database: {}", e);
-            HttpResponse::InternalServerError()
-                .json(ErrorResponse::internal_error("Failed to retrieve posts"))
+    } else {
+        // For other pagination requests (including page > 1 or larger limits), use paginated query directly
+        match data.get_posts_paginated(pagination.limit, offset).await {
+            Ok(posts) => {
+                info!(
+                    "Successfully fetched {} posts from the database.",
+                    posts.len()
+                );
+                HttpResponse::Ok().json(posts)
+            }
+            Err(e) => {
+                error!("Failed to get posts from database: {}", e);
+                HttpResponse::InternalServerError()
+                    .json(ErrorResponse::internal_error("Failed to retrieve posts"))
+            }
         }
     }
 }

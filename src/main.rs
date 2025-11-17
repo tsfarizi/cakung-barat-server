@@ -1,5 +1,6 @@
 use actix_cors::Cors;
 use actix_web::{App, HttpServer, http::header, web};
+use actix_web::middleware::Compress;
 use chrono;
 use serde::Serialize;
 use utoipa::{OpenApi, ToSchema};
@@ -131,6 +132,7 @@ async fn main() -> std::io::Result<()> {
             .max_age(3600);
 
         App::new()
+            .wrap(Compress::default())
             .wrap(cors)
             .app_data(app_state)
             .service(
