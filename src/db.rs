@@ -3,9 +3,12 @@ use std::env;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 use log;
+use moka::future::Cache;
+use std::time::Duration;
 
 pub struct AppState {
     pub pool: PgPool,
+    pub post_cache: Cache<String, Vec<crate::posting::models::Post>>,
 }
 
 impl AppState {
@@ -16,7 +19,12 @@ impl AppState {
 
         let pool = PgPool::connect(&database_url).await?;
 
-        Ok(AppState { pool })
+        let post_cache = Cache::builder()
+            .time_to_live(Duration::from_secs(10 * 60))
+            .max_capacity(100)
+            .build();
+
+        Ok(AppState { pool, post_cache })
     }
 
     // Asset-related functions
@@ -108,6 +116,19 @@ impl AppState {
         }
     }
 
+    pub async fn get_all_posts_cached(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
+        let key = "all_posts";
+        if let Some(posts) = self.post_cache.get(key).await {
+            log::info!("Cache hit for all_posts");
+            return Ok(posts);
+        }
+
+        log::info!("Cache miss for all_posts");
+        let posts = self.get_all_posts().await?;
+        self.post_cache.insert(key.to_string(), posts.clone()).await;
+        Ok(posts)
+    }
+
     pub async fn get_all_posts(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
         // First get all posts
         let posts = sqlx::query("SELECT id, title, category, date, excerpt, created_at, updated_at FROM posts ORDER BY created_at DESC")
@@ -171,6 +192,7 @@ impl AppState {
             }
         }
 
+        self.post_cache.invalidate("all_posts").await;
         Ok(())
     }
 
@@ -207,6 +229,7 @@ impl AppState {
             }
         }
 
+        self.post_cache.invalidate("all_posts").await;
         Ok(())
     }
 
@@ -216,6 +239,7 @@ impl AppState {
             .execute(&self.pool)
             .await?;
 
+        self.post_cache.invalidate("all_posts").await;
         Ok(())
     }
 

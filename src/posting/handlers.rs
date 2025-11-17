@@ -42,7 +42,7 @@ pub struct PostingResponse {
 pub async fn get_all_postings(data: web::Data<AppState>) -> impl Responder {
     info!("Executing get_all_postings handler");
     debug!("Attempting to fetch all posts.");
-    match data.get_all_posts().await {
+    match data.get_all_posts_cached().await {
         Ok(posts) => {
             info!(
                 "Successfully fetched {} posts from the database.",

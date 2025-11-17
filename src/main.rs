@@ -8,7 +8,6 @@ use utoipa_swagger_ui::SwaggerUi;
 mod asset;
 mod db;
 mod posting;
-mod schema;
 mod storage;
 
 use crate::db::AppState;

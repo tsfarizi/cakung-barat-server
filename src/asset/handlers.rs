@@ -3,7 +3,7 @@ use actix_web::{
     HttpResponse, Responder,
     web::{self, Json, Path},
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use serde::Serialize;
 use std::collections::HashSet;
 use utoipa::ToSchema;
