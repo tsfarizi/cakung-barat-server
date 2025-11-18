@@ -5,10 +5,7 @@ use actix_web::{
 };
 use log::{debug, error, info};
 use serde::Serialize;
-use std::collections::HashSet;
 use utoipa::ToSchema;
-use sqlx::Row;
-
 use crate::ErrorResponse;
 use crate::{asset::models::Asset, db::AppState, storage};
 use uuid::Uuid;
@@ -43,7 +40,7 @@ pub struct AllAssetsResponse {
 pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl Responder {
     info!("Executing upload_asset handler");
     debug!("Attempting to save file from multipart payload.");
-    match storage::save_file(payload).await {
+    match storage::save_file(payload, &data.http_client, &data.supabase_config).await {
         Ok((filename, posting_id_opt, folder_names, asset_name)) => {
             info!("File saved successfully with filename: {}", filename);
             let name = asset_name.unwrap_or_else(|| filename.clone());
@@ -178,7 +175,7 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                 "Attempting to delete physical asset file: {}",
                 &asset.filename
             );
-            if let Err(e) = storage::delete_asset_file(&asset.filename).await {
+            if let Err(e) = storage::delete_asset_file(&asset.filename, &data.http_client, &data.supabase_config).await {
                 error!(
                     "Failed to delete physical asset file {}: {}.",
                     asset.filename, e
@@ -299,86 +296,108 @@ pub async fn get_asset_by_id(id: Path<Uuid>, data: web::Data<AppState>) -> impl 
 )]
 pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Responder {
     info!("Executing get_all_assets_structured handler");
-    debug!("Fetching all assets from 'assets' table.");
-    let all_assets = match data.get_all_assets().await {
-        Ok(assets) => {
-            info!("Successfully fetched {} assets.", assets.len());
-            assets
-        }
-        Err(e) => {
-            error!("Failed to get all assets from database: {}", e);
-            return HttpResponse::InternalServerError()
-                .json(ErrorResponse::internal_error("Failed to retrieve assets"));
-        }
-    };
+    debug!("Fetching all assets structured by folder using optimized SQL query.");
 
-    let mut asset_ids_in_folders = HashSet::new();
-    let mut folders_with_assets: Vec<FolderWithAssets> = Vec::new();
-
-    debug!("Fetching all folders and their asset associations.");
-    let folder_asset_query = "
-        SELECT f.name, af.asset_id
+    // Get folder-asset associations efficiently
+    let folder_assets_query = r#"
+        SELECT
+            f.name as folder_name,
+            COALESCE(json_agg(
+                json_build_object(
+                    'id', a.id,
+                    'name', a.name,
+                    'filename', a.filename,
+                    'url', a.url,
+                    'description', a.description,
+                    'created_at', a.created_at,
+                    'updated_at', a.updated_at
+                ) ORDER BY a.created_at DESC
+            ) FILTER (WHERE a.id IS NOT NULL), '[]'::json) as assets_json
         FROM folders f
         LEFT JOIN asset_folders af ON f.id = af.folder_id
-    ";
+        LEFT JOIN assets a ON af.asset_id = a.id
+        GROUP BY f.name
+        ORDER BY f.name
+    "#;
 
-    match sqlx::query(folder_asset_query).fetch_all(&data.pool).await {
-        Ok(rows) => {
-            let mut folder_assets_map: std::collections::HashMap<String, Vec<Uuid>> = std::collections::HashMap::new();
+    #[derive(sqlx::FromRow, serde::Deserialize)]
+    struct FolderAssetsRow {
+        folder_name: String,
+        assets_json: serde_json::Value,
+    }
 
-            for row in rows {
-                let folder_name: String = row.get(0);
+    let folder_results: Result<Vec<FolderAssetsRow>, _> = sqlx::query_as(folder_assets_query)
+        .fetch_all(&data.pool)
+        .await;
 
-                let asset_id: Option<Uuid> = row.get(1);
+    match folder_results {
+        Ok(folder_rows) => {
+            let mut folders_with_assets: Vec<FolderWithAssets> = Vec::new();
 
-                if let Some(id) = asset_id {
-                    folder_assets_map.entry(folder_name).or_default().push(id);
-                    asset_ids_in_folders.insert(id);
+            for row in folder_rows {
+                let assets: Vec<Asset> = if row.assets_json.is_array() {
+                    match serde_json::from_value(row.assets_json.clone()) {
+                        Ok(assets) => assets,
+                        Err(e) => {
+                            error!("Failed to parse assets JSON for folder {}: {}", row.folder_name, e);
+                            Vec::new()
+                        }
+                    }
                 } else {
-                    folder_assets_map.entry(folder_name).or_default();
-                }
-            }
-
-            for (folder_name, asset_ids) in folder_assets_map {
-                let assets_in_folder: Vec<Asset> = all_assets
-                    .iter()
-                    .filter(|a| asset_ids.contains(&a.id))
-                    .cloned()
-                    .collect();
+                    Vec::new()
+                };
 
                 folders_with_assets.push(FolderWithAssets {
-                    name: folder_name,
-                    assets: assets_in_folder,
+                    name: row.folder_name,
+                    assets,
                 });
+            }
+
+            // Get unassigned assets separately
+            let unassigned_query = r#"
+                SELECT
+                    id, name, filename, url, description, created_at, updated_at
+                FROM assets
+                WHERE id NOT IN (
+                    SELECT DISTINCT asset_id
+                    FROM asset_folders
+                    WHERE asset_id IS NOT NULL
+                )
+                ORDER BY created_at DESC
+            "#;
+
+            let unassigned_assets: Result<Vec<Asset>, _> = sqlx::query_as(unassigned_query)
+                .fetch_all(&data.pool)
+                .await;
+
+            match unassigned_assets {
+                Ok(unassigned) => {
+                    if !unassigned.is_empty() {
+                        folders_with_assets.push(FolderWithAssets {
+                            name: "others".to_string(),
+                            assets: unassigned,
+                        });
+                    }
+
+                    info!("Successfully fetched structured assets: {} folders", folders_with_assets.len());
+                    let response = AllAssetsResponse {
+                        folders: folders_with_assets,
+                    };
+                    HttpResponse::Ok().json(response)
+                }
+                Err(e) => {
+                    error!("Failed to fetch unassigned assets: {}", e);
+                    HttpResponse::InternalServerError()
+                        .json(ErrorResponse::internal_error("Failed to retrieve unassigned assets"))
+                }
             }
         }
         Err(e) => {
-            error!("Failed to get folder-asset associations: {}", e);
+            error!("Failed to get structured assets from database: {}", e);
+            HttpResponse::InternalServerError()
+                .json(ErrorResponse::internal_error("Failed to retrieve structured assets"))
         }
     }
-
-    info!("Processed {} folders.", folders_with_assets.len());
-
-    debug!("Filtering for unassigned assets.");
-    let unassigned_assets: Vec<Asset> = all_assets
-        .iter()
-        .filter(|asset| !asset_ids_in_folders.contains(&asset.id))
-        .cloned()
-        .collect();
-    info!("Found {} unassigned assets.", unassigned_assets.len());
-
-    if !unassigned_assets.is_empty() {
-        folders_with_assets.push(FolderWithAssets {
-            name: "others".to_string(),
-            assets: unassigned_assets,
-        });
-    }
-
-    let response = AllAssetsResponse {
-        folders: folders_with_assets,
-    };
-
-    HttpResponse::Ok().json(response)
 }
 
 
@@ -394,7 +413,7 @@ pub async fn serve_asset(req: actix_web::HttpRequest, data: web::Data<AppState>)
         Ok(assets) => {
             if let Some(asset) = assets.iter().find(|a| a.filename == filename) {
                 info!("Asset found for filename: {}. Redirecting to Supabase storage.", &filename);
-                let supabase_url = storage::get_supabase_asset_url(&asset.filename);
+                let supabase_url = storage::get_supabase_asset_url(&asset.filename, &data.supabase_config);
                 return HttpResponse::TemporaryRedirect()
                     .append_header(("Location", supabase_url))
                     .finish();
@@ -446,7 +465,7 @@ pub async fn create_folder_handler(
         "Attempting to create folder '{}' in Supabase storage.",
         &req.folder_name
     );
-    match storage::create_folder(&req.folder_name).await {
+    match storage::create_folder(&req.folder_name, &data.http_client, &data.supabase_config).await {
         Ok(_) => {
             info!("Folder '{}' created in Supabase storage.", &req.folder_name);
             debug!(

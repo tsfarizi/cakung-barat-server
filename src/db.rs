@@ -5,10 +5,13 @@ use uuid::Uuid;
 use log;
 use moka::future::Cache;
 use std::time::Duration;
+use reqwest;
 
 pub struct AppState {
     pub pool: PgPool,
     pub post_cache: Cache<String, Vec<crate::posting::models::Post>>,
+    pub http_client: reqwest::Client,
+    pub supabase_config: crate::storage::SupabaseConfig,
 }
 
 impl AppState {
@@ -17,14 +20,30 @@ impl AppState {
         let database_url = env::var("SUPABASE_DATABASE_URL")
             .expect("SUPABASE_DATABASE_URL must be set");
 
-        let pool = PgPool::connect(&database_url).await?;
+        // Configure and create database pool with optimized settings
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(20)
+            .min_connections(5)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&database_url)
+            .await?;
 
         let post_cache = Cache::builder()
             .time_to_live(Duration::from_secs(10 * 60))
             .max_capacity(100)
             .build();
 
-        Ok(AppState { pool, post_cache })
+        // Create a reusable HTTP client
+        let http_client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .user_agent("cakung-barat-server/1.0")
+            .build()
+            .expect("Failed to create reqwest client");
+
+        // Create Supabase configuration cached once from environment
+        let supabase_config = crate::storage::SupabaseConfig::from_env()?;
+
+        Ok(AppState { pool, post_cache, http_client, supabase_config })
     }
 
     // Asset-related functions

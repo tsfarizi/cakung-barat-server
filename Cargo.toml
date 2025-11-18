@@ -28,6 +28,8 @@ supabase_rs = "0.1.0"
 reqwest = { version = "0.11", default-features = false, features = ["json", "multipart", "native-tls"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
 moka = { version = "0.12.1", features = ["future"] }
+tempfile = "3.0"
+tokio-util = { version = "0.7", features = ["codec"] }
 
 [profile.release]
 lto = true
