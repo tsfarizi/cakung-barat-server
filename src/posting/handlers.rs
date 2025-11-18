@@ -21,7 +21,7 @@ pub struct PostingResponse {
     pub category: String,
     pub date: NaiveDate,
     pub excerpt: String,
-    pub img: Option<Vec<Uuid>>,
+    pub folder_id: Option<String>,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     pub asset_ids: Vec<Uuid>,  // Added for asset associations
@@ -184,11 +184,14 @@ pub async fn create_posting(
     info!("Executing create_posting handler");
     debug!("Received request to create post.");
 
+    // Create a folder ID for the post using the post's UUID
+    let folder_id = format!("posts/{}", Uuid::new_v4());
+
     let new_post = Post::new(
         req.title.clone(),
         req.category.clone(),
         req.excerpt.clone(),
-        req.img.clone(),
+        Some(folder_id),
     );
 
     debug!("Attempting to insert new post into database.");
@@ -247,9 +250,9 @@ pub async fn update_posting(
                 debug!("Updating post excerpt for id: {:?}", post_id);
                 post.excerpt = excerpt.clone();
             }
-            if let Some(img) = &req.img {
-                debug!("Updating post img for id: {:?}", post_id);
-                post.img = Some(img.clone());
+            if let Some(folder_id) = &req.folder_id {
+                debug!("Updating post folder_id for id: {:?}", post_id);
+                post.folder_id = Some(folder_id.clone());
             }
 
             debug!(

@@ -17,8 +17,8 @@ pub struct Post {
         example = "Ini adalah ringkasan postingan."
     )]
     pub excerpt: String,
-    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef", "f1e2d3c4-b5a6-7890-1234-567890abcdef"]))]
-    pub img: Option<Vec<Uuid>>,
+    #[schema(example = "posts/f1e2d3c4-b5a6-7890-1234-567890abcdef")]
+    pub folder_id: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -37,8 +37,8 @@ pub struct Posting {
         example = "Ini adalah ringkasan postingan."
     )]
     pub excerpt: String,
-    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef", "f1e2d3c4-b5a6-7890-1234-567890abcdef"]))]
-    pub img: Option<Vec<Uuid>>,
+    #[schema(example = "posts/f1e2d3c4-b5a6-7890-1234-567890abcdef")]
+    pub folder_id: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub asset_ids: Vec<Uuid>, // For asset associations
@@ -52,8 +52,6 @@ pub struct CreatePostingRequest {
     pub category: String,
     #[schema(example = "Ini adalah ringkasan postingan baru.")]
     pub excerpt: String,
-    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef"]))]
-    pub img: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -64,21 +62,21 @@ pub struct UpdatePostingRequest {
     pub category: Option<String>,
     #[schema(example = "Ini adalah ringkasan postingan yang sudah diperbarui.")]
     pub excerpt: Option<String>,
-    #[schema(example = json!(["a1b2c3d4-e5f6-7890-1234-567890abcdef"]))]
-    pub img: Option<Vec<Uuid>>,
+    #[schema(example = "posts/f1e2d3c4-b5a6-7890-1234-567890abcdef")]
+    pub folder_id: Option<String>,
 }
 
 
 
 impl Post {
-    pub fn new(title: String, category: String, excerpt: String, img: Option<Vec<Uuid>>) -> Self {
+    pub fn new(title: String, category: String, excerpt: String, folder_id: Option<String>) -> Self {
         Post {
             id: Uuid::new_v4(),
             title,
             category,
             date: chrono::Local::now().date_naive(),
             excerpt,
-            img,
+            folder_id,
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),
         }

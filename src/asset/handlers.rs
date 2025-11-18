@@ -649,6 +649,127 @@ pub struct GetAssetsByIdsRequest {
     pub ids: Vec<Uuid>,
 }
 
+#[utoipa::path(
+    context_path = "/api",
+    tag = "Asset Service",
+    post,
+    path = "/assets/posts/{post_id}",
+    request_body(content = inline(UploadAssetRequest), content_type = "multipart/form-data"),
+    responses(
+        (status = 201, description = "Asset uploaded to post successfully", body = Asset),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Post not found", body = ErrorResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorResponse)
+    ),
+    params(
+        ("post_id" = Uuid, Path, description = "ID of the post to upload assets to")
+    )
+)]
+pub async fn upload_asset_to_post(
+    path: Path<Uuid>,
+    payload: Multipart,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let post_id = path.into_inner();
+    info!("Executing upload_asset_to_post handler for post ID: {}", post_id);
+
+    // First, check if the post exists
+    match data.get_post_by_id(&post_id).await {
+        Ok(Some(post)) => {
+            // Get or create the folder for this post
+            let folder_id = match &post.folder_id {
+                Some(folder_id) => folder_id.clone(),
+                None => {
+                    // Create a new folder for this post if it doesn't have one
+                    let new_folder_id = format!("posts/{}", post_id);
+
+                    // Create folder in Supabase storage
+                    if let Err(e) = storage::create_folder(&new_folder_id, &data.http_client, &data.supabase_config).await {
+                        error!("Failed to create folder for post {}: {}", post_id, e);
+                        return HttpResponse::InternalServerError()
+                            .json(ErrorResponse::internal_error("Failed to create post folder"));
+                    }
+
+                    // Update the post with the folder ID
+                    let mut updated_post = post.clone();
+                    updated_post.folder_id = Some(new_folder_id.clone());
+                    if let Err(e) = data.update_post(&updated_post).await {
+                        error!("Failed to update post {} with folder ID: {}", post_id, e);
+                        return HttpResponse::InternalServerError()
+                            .json(ErrorResponse::internal_error("Failed to update post with folder ID"));
+                    }
+
+                    new_folder_id
+                }
+            };
+
+            // Process the file upload normally
+            match storage::save_file(payload, &data.http_client, &data.supabase_config).await {
+                Ok((filename, _, mut folder_names, asset_name)) => {
+                    info!("File saved successfully with filename: {}", filename);
+
+                    // Add the post folder to the folder names list if not already there
+                    if !folder_names.contains(&folder_id) {
+                        folder_names.push(folder_id.clone());
+                    }
+
+                    let name = asset_name.unwrap_or_else(|| filename.clone());
+                    let new_asset = Asset::new(
+                        name,
+                        filename.clone(),
+                        format!("/assets/serve/{}", filename),
+                        None,
+                    );
+
+                    debug!("Attempting to insert new asset into 'assets' table.");
+                    if let Err(e) = data.insert_asset(&new_asset).await {
+                        error!("Failed to insert asset into db: {}", e);
+                        return HttpResponse::InternalServerError()
+                            .json(ErrorResponse::internal_error("Failed to save asset"));
+                    }
+                    info!("Asset {:?} created and stored in database.", new_asset.id);
+
+                    // Process folder associations (this will also add to the post folder)
+                    for folder_name in &folder_names {
+                        debug!("Associating asset {:?} with folder '{}'", new_asset.id, folder_name);
+                        let mut asset_ids = data
+                            .get_folder_contents(folder_name)
+                            .await
+                            .unwrap_or_default()
+                            .unwrap_or_default();
+                        asset_ids.push(new_asset.id);
+                        if let Err(e) = data.insert_folder_contents(folder_name, &asset_ids).await {
+                            error!("Failed to associate asset with folder: {}", e);
+                        } else {
+                            info!(
+                                "Asset {:?} successfully associated with folder '{}'",
+                                new_asset.id, folder_name
+                            );
+                        }
+                    }
+
+                    HttpResponse::Created().json(new_asset)
+                }
+                Err(e) => {
+                    error!("Failed during file upload process: {}", e);
+                    HttpResponse::BadRequest().json(ErrorResponse::bad_request(&e))
+                }
+            }
+        }
+        Ok(None) => {
+            error!("Post not found for ID: {}", post_id);
+            HttpResponse::NotFound().json(ErrorResponse::not_found(&format!(
+                "Post with ID {} not found", post_id
+            )))
+        }
+        Err(e) => {
+            error!("Database error when fetching post {}: {}", post_id, e);
+            HttpResponse::InternalServerError()
+                .json(ErrorResponse::internal_error("Failed to retrieve post"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;

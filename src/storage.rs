@@ -51,7 +51,7 @@ pub async fn save_file(
     let mut asset_name: Option<String> = None;
 
     while let Some(mut field) = payload.try_next().await.map_err(|e| e.to_string())? {
-        let content_disposition = field.content_disposition();
+        let content_disposition = field.content_disposition().ok_or("Content-Disposition not set")?;
         let field_name = content_disposition
             .get_name()
             .ok_or_else(|| "No field name".to_string())?;

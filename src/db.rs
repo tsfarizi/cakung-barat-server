@@ -22,7 +22,7 @@ impl AppState {
 
         // Configure and create database pool with optimized settings
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(50)
+            .max_connections(100)
             .min_connections(10)
             .acquire_timeout(std::time::Duration::from_secs(30))
             .idle_timeout(std::time::Duration::from_secs(900))
@@ -37,7 +37,6 @@ impl AppState {
 
         // Create a reusable HTTP client with connection pooling
         let http_client = reqwest::Client::builder()
-            .use_rustls_tls()
             .pool_idle_timeout(std::time::Duration::from_secs(900))
             .user_agent("cakung-barat-server/1.0")
             .build()
@@ -109,27 +108,23 @@ impl AppState {
         let post_row = sqlx::query("SELECT id, title, category, date, excerpt, created_at, updated_at FROM posts WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!("Error getting post by id: {:?}", e);
+                e
+            })?;
             
         if let Some(row) = post_row {
-            // Get associated asset IDs for images
-            let img_ids: Vec<Uuid> = sqlx::query("SELECT asset_id FROM post_images WHERE post_id = $1 ORDER BY sort_order")
-                .bind(id)
-                .fetch_all(&self.pool)
-                .await?
-                .into_iter()
-                .map(|r| r.get::<Uuid, _>("asset_id"))
-                .collect();
-                
-            let img = if img_ids.is_empty() { None } else { Some(img_ids) };
-            
+            // Get the folder_id for the post
+            let folder_id: Option<String> = row.get("folder_id");
+
             Ok(Some(crate::posting::models::Post {
                 id: row.get("id"),
                 title: row.get("title"),
                 category: row.get("category"),
                 date: row.get("date"),
                 excerpt: row.get("excerpt"),
-                img,
+                folder_id,
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             }))
@@ -152,25 +147,25 @@ impl AppState {
     }
 
     pub async fn get_posts_paginated(&self, limit: i32, offset: i32) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
-        // Use a single query with LEFT JOIN to fetch posts and associated image IDs with pagination
+        // Fetch posts with their folder_id
         let rows = sqlx::query(
-            "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.created_at, p.updated_at,
-                    COALESCE(array_agg(pi.asset_id ORDER BY pi.sort_order) FILTER (WHERE pi.asset_id IS NOT NULL), '{}') as img_ids
+            "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.folder_id, p.created_at, p.updated_at
              FROM posts p
-             LEFT JOIN post_images pi ON p.id = pi.post_id
-             GROUP BY p.id
              ORDER BY p.created_at DESC
              LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            log::error!("Error getting paginated posts: {:?}", e);
+            e
+        })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let img_ids: Vec<Uuid> = row.get("img_ids");
-            let img = if img_ids.is_empty() { None } else { Some(img_ids) };
+            let folder_id: Option<String> = row.get("folder_id");
 
             result.push(crate::posting::models::Post {
                 id: row.get("id"),
@@ -178,7 +173,7 @@ impl AppState {
                 category: row.get("category"),
                 date: row.get("date"),
                 excerpt: row.get("excerpt"),
-                img,
+                folder_id,
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             });
@@ -188,22 +183,22 @@ impl AppState {
     }
 
     pub async fn get_all_posts(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
-        // Use a single query with LEFT JOIN to fetch posts and associated image IDs
+        // Fetch posts with their folder_id
         let rows = sqlx::query(
-            "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.created_at, p.updated_at,
-                    COALESCE(array_agg(pi.asset_id ORDER BY pi.sort_order) FILTER (WHERE pi.asset_id IS NOT NULL), '{}') as img_ids
+            "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.folder_id, p.created_at, p.updated_at
              FROM posts p
-             LEFT JOIN post_images pi ON p.id = pi.post_id
-             GROUP BY p.id
              ORDER BY p.created_at DESC"
         )
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            log::error!("Error getting all posts: {:?}", e);
+            e
+        })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let img_ids: Vec<Uuid> = row.get("img_ids");
-            let img = if img_ids.is_empty() { None } else { Some(img_ids) };
+            let folder_id: Option<String> = row.get("folder_id");
 
             result.push(crate::posting::models::Post {
                 id: row.get("id"),
@@ -211,7 +206,7 @@ impl AppState {
                 category: row.get("category"),
                 date: row.get("date"),
                 excerpt: row.get("excerpt"),
-                img,
+                folder_id,
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             });
@@ -221,68 +216,47 @@ impl AppState {
     }
 
     pub async fn insert_post(&self, post: &crate::posting::models::Post) -> Result<(), sqlx::Error> {
-        // Insert the post record
+        // Insert the post record with folder_id
         sqlx::query(
-            "INSERT INTO posts (id, title, category, date, excerpt, created_at, updated_at) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7)")
+            "INSERT INTO posts (id, title, category, date, excerpt, folder_id, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
         .bind(post.id)
         .bind(&post.title)
         .bind(&post.category)
         .bind(post.date)
-        .bind(&post.excerpt)
+        .bind(&post.excerpt.clone())
+        .bind(&post.folder_id)
         .bind(post.created_at)
         .bind(post.updated_at)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            log::error!("Error inserting post record: {:?}", e);
+            e
+        })?;
 
-        // Insert associated image asset IDs if any
-        if let Some(img_ids) = &post.img {
-            for (index, img_id) in img_ids.iter().enumerate() {
-                sqlx::query("INSERT INTO post_images (post_id, asset_id, sort_order) VALUES ($1, $2, $3)")
-                    .bind(post.id)
-                    .bind(img_id)
-                    .bind(index as i32)
-                    .execute(&self.pool)
-                    .await?;
-            }
-        }
-
-        self.post_cache.invalidate("all_posts").await;
         Ok(())
     }
 
     pub async fn update_post(&self, post: &crate::posting::models::Post) -> Result<(), sqlx::Error> {
-        // Update the post record
+        // Update the post record with folder_id
         sqlx::query(
-            "UPDATE posts 
-             SET title = $2, category = $3, date = $4, excerpt = $5, updated_at = $6 
+            "UPDATE posts
+             SET title = $2, category = $3, date = $4, excerpt = $5, folder_id = $6, updated_at = $7
              WHERE id = $1")
         .bind(post.id)
         .bind(&post.title)
         .bind(&post.category)
         .bind(post.date)
         .bind(&post.excerpt)
+        .bind(&post.folder_id)
         .bind(post.updated_at)
         .execute(&self.pool)
-        .await?;
-
-        // Remove existing image associations
-        sqlx::query("DELETE FROM post_images WHERE post_id = $1")
-            .bind(post.id)
-            .execute(&self.pool)
-            .await?;
-
-        // Insert new image associations if any
-        if let Some(img_ids) = &post.img {
-            for (index, img_id) in img_ids.iter().enumerate() {
-                sqlx::query("INSERT INTO post_images (post_id, asset_id, sort_order) VALUES ($1, $2, $3)")
-                    .bind(post.id)
-                    .bind(img_id)
-                    .bind(index as i32)
-                    .execute(&self.pool)
-                    .await?;
-            }
-        }
+        .await
+        .map_err(|e| {
+            log::error!("Error updating post record: {:?}", e);
+            e
+        })?;
 
         self.post_cache.invalidate("all_posts").await;
         Ok(())
@@ -292,7 +266,11 @@ impl AppState {
         sqlx::query("DELETE FROM posts WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!("Error deleting post: {:?}", e);
+                e
+            })?;
 
         self.post_cache.invalidate("all_posts").await;
         Ok(())
@@ -308,7 +286,11 @@ impl AppState {
             let asset_ids = sqlx::query("SELECT asset_id FROM posting_assets WHERE posting_id = $1")
                 .bind(id)
                 .fetch_all(&self.pool)
-                .await?
+                .await
+                .map_err(|e| {
+                    log::error!("Error getting posting assets: {:?}", e);
+                    e
+                })?
                 .into_iter()
                 .map(|row| row.get::<Uuid, _>("asset_id"))
                 .collect();
@@ -320,7 +302,7 @@ impl AppState {
                 category: post.category,
                 date: post.date,
                 excerpt: post.excerpt,
-                img: post.img,
+                folder_id: post.folder_id,
                 created_at: post.created_at,
                 updated_at: post.updated_at,
                 asset_ids,
@@ -343,7 +325,7 @@ impl AppState {
                     category: posting.category.clone(),
                     date: posting.date,
                     excerpt: posting.excerpt.clone(),
-                    img: posting.img.clone(),
+                    folder_id: posting.folder_id.clone(),
                     created_at: posting.created_at,
                     updated_at: Some(chrono::Utc::now()),
                 };
@@ -357,7 +339,7 @@ impl AppState {
                     category: posting.category.clone(),
                     date: posting.date,
                     excerpt: posting.excerpt.clone(),
-                    img: posting.img.clone(),
+                    folder_id: posting.folder_id.clone(),
                     created_at: Some(chrono::Utc::now()),
                     updated_at: Some(chrono::Utc::now()),
                 };
@@ -370,7 +352,11 @@ impl AppState {
         sqlx::query("DELETE FROM posting_assets WHERE posting_id = $1")
             .bind(&posting.id)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!("Error deleting posting assets: {:?}", e);
+                e
+            })?;
 
         // Then insert new associations
         for asset_id in &posting.asset_ids {
@@ -378,7 +364,11 @@ impl AppState {
                 .bind(&posting.id)
                 .bind(asset_id)
                 .execute(&self.pool)
-                .await?;
+                .await
+                .map_err(|e| {
+                    log::error!("Error inserting posting asset: {:?}", e);
+                    e
+                })?;
         }
 
         Ok(())
@@ -394,7 +384,11 @@ impl AppState {
             let asset_ids = sqlx::query("SELECT asset_id FROM posting_assets WHERE posting_id = $1")
                 .bind(&post.id)
                 .fetch_all(&self.pool)
-                .await?
+                .await
+                .map_err(|e| {
+                    log::error!("Error getting posting assets: {:?}", e);
+                    e
+                })?
                 .into_iter()
                 .map(|row| row.get::<Uuid, _>("asset_id"))
                 .collect();
@@ -405,7 +399,7 @@ impl AppState {
                 category: post.category,
                 date: post.date,
                 excerpt: post.excerpt,
-                img: post.img,
+                folder_id: post.folder_id,
                 created_at: post.created_at,
                 updated_at: post.updated_at,
                 asset_ids,
@@ -427,14 +421,22 @@ impl AppState {
         let folder_row = sqlx::query("SELECT id FROM folders WHERE name = $1")
             .bind(folder_name)
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!("Error getting folder: {:?}", e);
+                e
+            })?;
 
         if let Some(folder_record) = folder_row {
             let folder_id_val: Uuid = folder_record.get::<Uuid, _>("id");
             let asset_rows = sqlx::query("SELECT asset_id FROM asset_folders WHERE folder_id = $1")
                 .bind(folder_id_val)
                 .fetch_all(&self.pool)
-                .await?;
+                .await
+                .map_err(|e| {
+                    log::error!("Error getting folder assets: {:?}", e);
+                    e
+                })?;
 
             let asset_ids: Vec<Uuid> = asset_rows.into_iter().map(|row| row.get::<Uuid, _>("asset_id")).collect();
 
@@ -456,27 +458,47 @@ impl AppState {
         let folder_record: (Uuid,) = sqlx::query_as("INSERT INTO folders (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = $1 RETURNING id")
             .bind(folder_name)
             .fetch_one(&self.pool)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!("Error upserting folder: {:?}", e);
+                e
+            })?;
         let folder_id = folder_record.0;
         log::debug!("Got/created folder with ID: {} for name: {}", folder_id, folder_name);
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin().await
+            .map_err(|e| {
+                log::error!("Error beginning transaction: {:?}", e);
+                e
+            })?;
 
         sqlx::query("DELETE FROM asset_folders WHERE folder_id = $1")
             .bind(folder_id)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!("Error deleting asset folders: {:?}", e);
+                e
+            })?;
 
         for asset_id in contents {
             sqlx::query("INSERT INTO asset_folders (folder_id, asset_id) VALUES ($1, $2)")
                 .bind(folder_id)
                 .bind(asset_id)
                 .execute(&mut *tx)
-                .await?;
+                .await
+                .map_err(|e| {
+                    log::error!("Error inserting asset folder: {:?}", e);
+                    e
+                })?;
             log::debug!("Associated asset ID: {} with folder ID: {}", asset_id, folder_id);
         }
 
-        tx.commit().await?;
+        tx.commit().await
+            .map_err(|e| {
+                log::error!("Error committing transaction: {:?}", e);
+                e
+            })?;
         log::info!("Successfully updated folder contents for folder: {}, with {} assets", folder_name, contents.len());
         Ok(())
     }
