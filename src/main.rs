@@ -181,6 +181,9 @@ async fn main() -> std::io::Result<()> {
                     .url("/api-doc/openapi.json", ApiDoc::openapi()),
             )
     })
+    .backlog(8192)
+    .max_connections(25000)
+    .keep_alive(actix_web::http::KeepAlive::Os)
     .bind(("0.0.0.0", 8080))?
     .run()
     .await

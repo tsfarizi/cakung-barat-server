@@ -131,7 +131,7 @@ async fn upload_to_supabase_storage_from_file(filename: &str, file_path: &str, c
     log::info!("Attempting to upload asset file to Supabase storage: {}", filename);
     log::debug!("Uploading file from path {} to Supabase storage: {}", file_path, filename);
 
-    // Read file content
+    // Read file content (for now, until we find a better streaming method)
     let file_bytes = tokio::fs::read(file_path).await
         .map_err(|e| format!("Failed to read file: {}", e))?;
 

@@ -22,9 +22,11 @@ impl AppState {
 
         // Configure and create database pool with optimized settings
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(20)
-            .min_connections(5)
-            .acquire_timeout(std::time::Duration::from_secs(5))
+            .max_connections(50)
+            .min_connections(10)
+            .acquire_timeout(std::time::Duration::from_secs(30))
+            .idle_timeout(std::time::Duration::from_secs(900))
+            .max_lifetime(std::time::Duration::from_secs(1800))
             .connect(&database_url)
             .await?;
 
@@ -33,9 +35,10 @@ impl AppState {
             .max_capacity(100)
             .build();
 
-        // Create a reusable HTTP client
+        // Create a reusable HTTP client with connection pooling
         let http_client = reqwest::Client::builder()
             .use_rustls_tls()
+            .pool_idle_timeout(std::time::Duration::from_secs(900))
             .user_agent("cakung-barat-server/1.0")
             .build()
             .expect("Failed to create reqwest client");
