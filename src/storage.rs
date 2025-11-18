@@ -8,6 +8,8 @@ use serde_json::Value;
 use log;
 use tempfile::NamedTempFile;
 use std::io::Write;
+use tokio_util::codec::{BytesCodec, FramedRead};
+use mime_guess::from_path;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, utoipa::ToSchema)]
 pub struct FolderContent {
@@ -131,18 +133,25 @@ async fn upload_to_supabase_storage_from_file(filename: &str, file_path: &str, c
     log::info!("Attempting to upload asset file to Supabase storage: {}", filename);
     log::debug!("Uploading file from path {} to Supabase storage: {}", file_path, filename);
 
-    // Read file content (for now, until we find a better streaming method)
-    let file_bytes = tokio::fs::read(file_path).await
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    // Open the file and create a stream instead of loading everything into memory
+    let file = tokio::fs::File::open(file_path).await
+        .map_err(|e| format!("Failed to open file for streaming: {}", e))?;
+
+    let stream = FramedRead::new(file, BytesCodec::new());
+    let stream_body = reqwest::Body::wrap_stream(stream);
 
     let upload_url = format!("{}/storage/v1/object/{}/{}", config.supabase_url, config.bucket_name, filename);
     log::debug!("Supabase upload URL: {}", upload_url);
+
+    // Determine content type based on file extension for better compatibility
+    let content_type = from_path(file_path).first_or_octet_stream().to_string();
 
     let response = client
         .post(&upload_url)
         .header("Authorization", format!("Bearer {}", config.supabase_anon_key))
         .header("apikey", &config.supabase_anon_key)
-        .body(file_bytes)
+        .header("Content-Type", content_type) // Use appropriate content type based on file extension
+        .body(stream_body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -151,8 +160,10 @@ async fn upload_to_supabase_storage_from_file(filename: &str, file_path: &str, c
         log::info!("Successfully uploaded asset file to Supabase storage: {}", filename);
         Ok(())
     } else {
-        log::error!("Upload failed for file {} with status: {}", filename, response.status());
-        Err(format!("Upload failed with status: {}", response.status()))
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        log::error!("Upload failed for file {} with status: {}: {}", filename, status, error_text);
+        Err(format!("Upload failed with status: {}", status))
     }
 }
 
