@@ -3,6 +3,7 @@ use actix_web::{
     HttpResponse, Responder,
     web::{self, Json, Path},
 };
+use futures::StreamExt;
 use log::{debug, error, info};
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -703,58 +704,116 @@ pub async fn upload_asset_to_post(
                 }
             };
 
-            // Process the file upload normally
-            match storage::save_file(payload, &data.http_client, &data.supabase_config).await {
-                Ok((filename, _, mut folder_names, asset_name)) => {
-                    info!("File saved successfully with filename: {}", filename);
+            // Process multiple file uploads
+            let mut uploaded_assets = Vec::new();
+            let mut errors = Vec::new();
 
-                    // Add the post folder to the folder names list if not already there
-                    if !folder_names.contains(&folder_id) {
-                        folder_names.push(folder_id.clone());
-                    }
+            let mut payload = payload;
+            while let Some(item) = payload.next().await {
+                match item {
+                    Ok(mut field) => {
+                        let content_disposition = field.content_disposition();
+                        if let Some(content_disposition) = content_disposition {
+                            let field_name = content_disposition.get_name();
+                            if let Some(field_name) = field_name {
+                                if field_name.starts_with("file") { // Support multiple files like file, file1, file2, etc.
+                                    let file_name = content_disposition.get_filename()
+                                        .unwrap_or("unnamed_file")
+                                        .to_string();
 
-                    let name = asset_name.unwrap_or_else(|| filename.clone());
-                    let new_asset = Asset::new(
-                        name,
-                        filename.clone(),
-                        format!("/assets/serve/{}", filename),
-                        None,
-                    );
+                                    let ext = std::path::Path::new(&file_name)
+                                        .extension()
+                                        .and_then(std::ffi::OsStr::to_str)
+                                        .unwrap_or("");
 
-                    debug!("Attempting to insert new asset into 'assets' table.");
-                    if let Err(e) = data.insert_asset(&new_asset).await {
-                        error!("Failed to insert asset into db: {}", e);
-                        return HttpResponse::InternalServerError()
-                            .json(ErrorResponse::internal_error("Failed to save asset"));
-                    }
-                    info!("Asset {:?} created and stored in database.", new_asset.id);
+                                    let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), file_name.replace(".", "_"), ext);
 
-                    // Process folder associations (this will also add to the post folder)
-                    for folder_name in &folder_names {
-                        debug!("Associating asset {:?} with folder '{}'", new_asset.id, folder_name);
-                        let mut asset_ids = data
-                            .get_folder_contents(folder_name)
-                            .await
-                            .unwrap_or_default()
-                            .unwrap_or_default();
-                        asset_ids.push(new_asset.id);
-                        if let Err(e) = data.insert_folder_contents(folder_name, &asset_ids).await {
-                            error!("Failed to associate asset with folder: {}", e);
-                        } else {
-                            info!(
-                                "Asset {:?} successfully associated with folder '{}'",
-                                new_asset.id, folder_name
-                            );
+                                    // Stream the file data directly to collect it in memory
+                                    let mut file_data = Vec::new();
+                                    while let Some(chunk_result) = field.next().await {
+                                        match chunk_result {
+                                            Ok(data) => file_data.extend_from_slice(&data),
+                                            Err(e) => {
+                                                error!("Failed to read chunk: {}", e);
+                                                errors.push(format!("Failed to read chunk: {}", e));
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    // Upload the file to Supabase storage using the new public function
+                                    let upload_result = storage::upload_file_to_supabase(
+                                        &unique_filename,
+                                        &file_data,
+                                        &data.http_client,
+                                        &data.supabase_config
+                                    ).await;
+
+                                    if let Err(e) = upload_result {
+                                        error!("Failed to upload file to Supabase: {}", e);
+                                        errors.push(format!("Failed to upload file: {}", e));
+                                        continue;
+                                    }
+
+                                    info!("File saved successfully with filename: {}", unique_filename);
+
+                                    // Create asset record in database
+                                    let new_asset = Asset::new(
+                                        file_name.clone(), // Use original filename as name
+                                        unique_filename.clone(),
+                                        format!("/assets/serve/{}", unique_filename),
+                                        None,
+                                    );
+
+                                    debug!("Attempting to insert new asset into 'assets' table.");
+                                    if let Err(e) = data.insert_asset(&new_asset).await {
+                                        error!("Failed to insert asset into db: {}", e);
+                                        errors.push(format!("Failed to insert asset into db: {}", e));
+                                        continue;
+                                    }
+                                    info!("Asset {:?} created and stored in database.", new_asset.id);
+
+                                    // Associate the asset with the post folder
+                                    let mut asset_ids = data
+                                        .get_folder_contents(&folder_id)
+                                        .await
+                                        .unwrap_or_default()
+                                        .unwrap_or_default();
+                                    asset_ids.push(new_asset.id);
+                                    if let Err(e) = data.insert_folder_contents(&folder_id, &asset_ids).await {
+                                        error!("Failed to associate asset with post folder: {}", e);
+                                        errors.push(format!("Failed to associate asset with post folder: {}", e));
+                                    } else {
+                                        info!(
+                                            "Asset {:?} successfully associated with post folder '{}'",
+                                            new_asset.id, folder_id
+                                        );
+                                    }
+
+                                    uploaded_assets.push(new_asset);
+                                }
+                            }
                         }
                     }
-
-                    HttpResponse::Created().json(new_asset)
-                }
-                Err(e) => {
-                    error!("Failed during file upload process: {}", e);
-                    HttpResponse::BadRequest().json(ErrorResponse::bad_request(&e))
+                    Err(e) => {
+                        error!("Failed to process multipart field: {}", e);
+                        errors.push(format!("Failed to process multipart field: {}", e));
+                    }
                 }
             }
+
+            if !errors.is_empty() {
+                error!("Errors occurred during upload: {:?}", errors);
+            }
+
+            if uploaded_assets.is_empty() {
+                error!("No files were uploaded for post ID: {}", post_id);
+                return HttpResponse::BadRequest()
+                    .json(ErrorResponse::bad_request("No files were uploaded"));
+            }
+
+            // Return the first asset (or we could return all uploaded assets)
+            HttpResponse::Created().json(uploaded_assets[0].clone()) // Return first asset
         }
         Ok(None) => {
             error!("Post not found for ID: {}", post_id);

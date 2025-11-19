@@ -70,7 +70,7 @@ pub async fn run() -> std::io::Result<()> {
         ),
         components(
             schemas(
-                posting::models::Posting,
+                posting::models::PostWithAssets,
                 posting::models::Post,
                 asset::models::Asset,
                 posting::models::CreatePostingRequest,
@@ -82,7 +82,7 @@ pub async fn run() -> std::io::Result<()> {
                 asset::handlers::AllAssetsResponse,
                 asset::handlers::FolderWithAssets,
                 storage::FolderContent,
-                ErrorResponse
+                ErrorResponse,
             )
         ),
         tags(

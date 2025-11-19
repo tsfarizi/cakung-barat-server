@@ -24,34 +24,30 @@ pub struct Post {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
-pub struct Posting {
-    #[schema(example = "f1e2d3c4-b5a6-7890-1234-567890abcdef")]
+pub struct PostWithAssets {
     pub id: Uuid,
-    #[schema(example = "Judul Posting")]
     pub title: String,
-    #[schema(example = "Kategori Posting")]
     pub category: String,
-    #[schema(example = "2025-11-05")]
     pub date: NaiveDate,
-    #[schema(
-        example = "Ini adalah ringkasan postingan."
-    )]
     pub excerpt: String,
-    #[schema(example = "posts/f1e2d3c4-b5a6-7890-1234-567890abcdef")]
     pub folder_id: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
-    pub asset_ids: Vec<Uuid>, // For asset associations
+    pub asset_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+
 pub struct CreatePostingRequest {
-    #[schema(example = "Judul Posting Baru")]
+
     pub title: String,
-    #[schema(example = "Kategori Posting Baru")]
+
     pub category: String,
-    #[schema(example = "Ini adalah ringkasan postingan baru.")]
+
     pub excerpt: String,
+
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

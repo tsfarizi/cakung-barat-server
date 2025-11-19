@@ -8,8 +8,7 @@ use serde_json::Value;
 use log;
 use tempfile::NamedTempFile;
 use std::io::Write;
-use tokio_util::codec::{BytesCodec, FramedRead};
-use mime_guess::from_path;
+use mime_guess;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, utoipa::ToSchema)]
 pub struct FolderContent {
@@ -84,7 +83,7 @@ pub async fn save_file(
                     .map_err(|e| format!("Failed to seek temp file: {}", e))?;
 
                 // Upload the file to Supabase storage using the temporary file
-                upload_to_supabase_storage_from_file(&unique_filename, temp_file.path().to_string_lossy().as_ref(), client, config).await?;
+                upload_file_to_supabase(&unique_filename, std::fs::read(temp_file.path()).map_err(|e| format!("Failed to read temp file: {}", e))?.as_slice(), client, config).await?;
 
                 filename = Some(unique_filename);
             }
@@ -129,29 +128,22 @@ pub async fn save_file(
     }
 }
 
-async fn upload_to_supabase_storage_from_file(filename: &str, file_path: &str, client: &reqwest::Client, config: &SupabaseConfig) -> Result<(), String> {
+pub async fn upload_file_to_supabase(filename: &str, file_data: &[u8], client: &reqwest::Client, config: &SupabaseConfig) -> Result<(), String> {
     log::info!("Attempting to upload asset file to Supabase storage: {}", filename);
-    log::debug!("Uploading file from path {} to Supabase storage: {}", file_path, filename);
-
-    // Open the file and create a stream instead of loading everything into memory
-    let file = tokio::fs::File::open(file_path).await
-        .map_err(|e| format!("Failed to open file for streaming: {}", e))?;
-
-    let stream = FramedRead::new(file, BytesCodec::new());
-    let stream_body = reqwest::Body::wrap_stream(stream);
+    log::debug!("Uploading file data to Supabase storage: {}", filename);
 
     let upload_url = format!("{}/storage/v1/object/{}/{}", config.supabase_url, config.bucket_name, filename);
     log::debug!("Supabase upload URL: {}", upload_url);
 
     // Determine content type based on file extension for better compatibility
-    let content_type = from_path(file_path).first_or_octet_stream().to_string();
+    let content_type = mime_guess::from_path(filename).first_or_octet_stream().to_string();
 
     let response = client
         .post(&upload_url)
         .header("Authorization", format!("Bearer {}", config.supabase_anon_key))
         .header("apikey", &config.supabase_anon_key)
         .header("Content-Type", content_type) // Use appropriate content type based on file extension
-        .body(stream_body)
+        .body(file_data.to_vec())
         .send()
         .await
         .map_err(|e| e.to_string())?;
