@@ -111,22 +111,18 @@ pub async fn save_file(
 
                 let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), sanitized_filename.replace(".", "_"), ext);
 
-                // Create a temporary file to stream the uploaded data
                 let mut temp_file = NamedTempFile::new()
                     .map_err(|e| format!("Failed to create temporary file: {}", e))?;
 
-                // Stream the file data directly to the temporary file to avoid loading in memory
                 while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
                     temp_file.write_all(&chunk)
                         .map_err(|e| format!("Failed to write chunk to temp file: {}", e))?;
                 }
 
-                // Rewind to the beginning of the file
                 use std::io::Seek;
                 temp_file.as_file_mut().seek(std::io::SeekFrom::Start(0))
                     .map_err(|e| format!("Failed to seek temp file: {}", e))?;
 
-                // Upload the file to Supabase storage using the temporary file
                 upload_file_to_supabase(&unique_filename, std::fs::read(temp_file.path()).map_err(|e| format!("Failed to read temp file: {}", e))?.as_slice(), client, config).await?;
 
                 filename = Some(unique_filename);

@@ -1,6 +1,6 @@
 use dotenvy::dotenv;
 use std::env;
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use uuid::Uuid;
 use log;
 use moka::future::Cache;
@@ -48,15 +48,32 @@ impl AppState {
         Ok(AppState { pool, post_cache, http_client, storage })
     }
 
+    pub async fn new_with_pool_and_storage(
+        pool: sqlx::PgPool,
+        storage: Arc<dyn crate::storage::ObjectStorage + Send + Sync>
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let post_cache = Cache::builder()
+            .time_to_live(Duration::from_secs(10 * 60))
+            .max_capacity(100)
+            .build();
+
+        let http_client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(900))
+            .user_agent("cakung-barat-server/1.0")
+            .build()
+            .expect("Failed to create reqwest client");
+
+        Ok(AppState { pool, post_cache, http_client, storage })
+    }
+
     pub async fn get_asset_by_id(&self, id: &Uuid) -> Result<Option<crate::asset::models::Asset>, sqlx::Error> {
-        sqlx::query_as("SELECT id, name, filename, url, description, created_at, updated_at FROM assets WHERE id = $1")
-            .bind(id)
+        sqlx::query_as!(crate::asset::models::Asset, "SELECT id, name, filename, url, description, created_at, updated_at FROM assets WHERE id = $1", id)
             .fetch_optional(&self.pool)
             .await
     }
 
     pub async fn get_all_assets(&self) -> Result<Vec<crate::asset::models::Asset>, sqlx::Error> {
-        sqlx::query_as("SELECT id, name, filename, url, description, created_at, updated_at FROM assets ORDER BY created_at DESC")
+        sqlx::query_as!(crate::asset::models::Asset, "SELECT id, name, filename, url, description, created_at, updated_at FROM assets ORDER BY created_at DESC")
             .fetch_all(&self.pool)
             .await
     }
@@ -67,26 +84,27 @@ impl AppState {
             return Ok(Vec::new());
         }
 
-        sqlx::query_as("SELECT id, name, filename, url, description, created_at, updated_at FROM assets WHERE id = ANY($1)")
-            .bind(ids)
+        sqlx::query_as!(crate::asset::models::Asset, "SELECT id, name, filename, url, description, created_at, updated_at FROM assets WHERE id = ANY($1)", ids)
             .fetch_all(&self.pool)
             .await
     }
 
     pub async fn insert_asset(&self, asset: &crate::asset::models::Asset) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO assets (id, name, filename, url, description, created_at, updated_at)
+        sqlx::query!(
+            r#"
+            INSERT INTO assets (id, name, filename, url, description, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (id) DO UPDATE
-             SET name = $2, filename = $3, url = $4, description = $5, updated_at = $7"
+             SET name = $2, filename = $3, url = $4, description = $5, updated_at = $7
+            "#,
+            asset.id,
+            &asset.name,
+            &asset.filename,
+            &asset.url,
+            asset.description.as_deref(),
+            asset.created_at,
+            asset.updated_at
         )
-        .bind(asset.id)
-        .bind(&asset.name)
-        .bind(&asset.filename)
-        .bind(&asset.url)
-        .bind(&asset.description)
-        .bind(asset.created_at)
-        .bind(asset.updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -94,43 +112,26 @@ impl AppState {
     }
 
     pub async fn delete_asset(&self, id: &Uuid) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM assets WHERE id = $1")
-            .bind(id)
+        sqlx::query!("DELETE FROM assets WHERE id = $1", id)
             .execute(&self.pool)
             .await?;
 
         Ok(())
     }
 
-    // Posting-related functions
     pub async fn get_post_by_id(&self, id: &Uuid) -> Result<Option<crate::posting::models::Post>, sqlx::Error> {
-        // First get the post details
-        let post_row = sqlx::query("SELECT id, title, category, date, excerpt, folder_id, created_at, updated_at FROM posts WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| {
-                log::error!("Error getting post by id: {:?}", e);
-                e
-            })?;
 
-        if let Some(row) = post_row {
-            // Get the folder_id for the post
-            let folder_id: Option<String> = row.get("folder_id");
-
-            Ok(Some(crate::posting::models::Post {
-                id: row.get("id"),
-                title: row.get("title"),
-                category: row.get("category"),
-                date: row.get("date"),
-                excerpt: row.get("excerpt"),
-                folder_id,
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
-            }))
-        } else {
-            Ok(None)
-        }
+        sqlx::query_as!(
+            crate::posting::models::Post,
+            "SELECT id, title, category, date, excerpt, folder_id, created_at, updated_at FROM posts WHERE id = $1",
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            log::error!("Error getting post by id: {:?}", e);
+            e
+        })
     }
 
     pub async fn get_all_posts_cached(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
@@ -147,44 +148,27 @@ impl AppState {
     }
 
     pub async fn get_posts_paginated(&self, limit: i32, offset: i32) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
-        // Fetch posts with their folder_id
-        let rows = sqlx::query(
+
+        sqlx::query_as!(
+            crate::posting::models::Post,
             "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.folder_id, p.created_at, p.updated_at
              FROM posts p
              ORDER BY p.created_at DESC
-             LIMIT $1 OFFSET $2"
+             LIMIT $1 OFFSET $2",
+            i64::from(limit),
+            i64::from(offset)
         )
-        .bind(limit)
-        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
             log::error!("Error getting paginated posts: {:?}", e);
             e
-        })?;
-
-        let mut result = Vec::new();
-        for row in rows {
-            let folder_id: Option<String> = row.get("folder_id");
-
-            result.push(crate::posting::models::Post {
-                id: row.get("id"),
-                title: row.get("title"),
-                category: row.get("category"),
-                date: row.get("date"),
-                excerpt: row.get("excerpt"),
-                folder_id,
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
-            });
-        }
-
-        Ok(result)
+        })
     }
 
     pub async fn get_all_posts(&self) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
-        // Fetch posts with their folder_id
-        let rows = sqlx::query(
+        sqlx::query_as!(
+            crate::posting::models::Post,
             "SELECT p.id, p.title, p.category, p.date, p.excerpt, p.folder_id, p.created_at, p.updated_at
              FROM posts p
              ORDER BY p.created_at DESC"
@@ -194,41 +178,24 @@ impl AppState {
         .map_err(|e| {
             log::error!("Error getting all posts: {:?}", e);
             e
-        })?;
-
-        let mut result = Vec::new();
-        for row in rows {
-            let folder_id: Option<String> = row.get("folder_id");
-
-            result.push(crate::posting::models::Post {
-                id: row.get("id"),
-                title: row.get("title"),
-                category: row.get("category"),
-                date: row.get("date"),
-                excerpt: row.get("excerpt"),
-                folder_id,
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
-            });
-        }
-
-        Ok(result)
+        })
     }
 
     pub async fn insert_post(&self, post: &crate::posting::models::Post) -> Result<(), sqlx::Error> {
-        // Insert the post record with folder_id
-        sqlx::query(
-            "INSERT INTO posts (id, title, category, date, excerpt, folder_id, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        sqlx::query!(
+            r#"
+            INSERT INTO posts (id, title, category, date, excerpt, folder_id, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            "#,
+            post.id,
+            &post.title,
+            &post.category,
+            post.date,
+            &post.excerpt,
+            post.folder_id.as_deref(),
+            post.created_at,
+            post.updated_at
         )
-        .bind(post.id)
-        .bind(&post.title)
-        .bind(&post.category)
-        .bind(post.date)
-        .bind(&post.excerpt)
-        .bind(&post.folder_id)
-        .bind(post.created_at)
-        .bind(post.updated_at)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -240,19 +207,20 @@ impl AppState {
     }
 
     pub async fn update_post(&self, post: &crate::posting::models::Post) -> Result<(), sqlx::Error> {
-        // Update the post record with folder_id
-        sqlx::query(
-            "UPDATE posts
+        sqlx::query!(
+            r#"
+            UPDATE posts
              SET title = $2, category = $3, date = $4, excerpt = $5, folder_id = $6, updated_at = $7
-             WHERE id = $1"
+             WHERE id = $1
+            "#,
+            post.id,
+            &post.title,
+            &post.category,
+            post.date,
+            &post.excerpt,
+            post.folder_id.as_deref(),
+            post.updated_at
         )
-        .bind(post.id)
-        .bind(&post.title)
-        .bind(&post.category)
-        .bind(post.date)
-        .bind(&post.excerpt)
-        .bind(&post.folder_id)
-        .bind(post.updated_at)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -265,8 +233,7 @@ impl AppState {
     }
 
     pub async fn delete_post(&self, id: &Uuid) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM posts WHERE id = $1")
-            .bind(id)
+        sqlx::query!("DELETE FROM posts WHERE id = $1", id)
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -280,15 +247,13 @@ impl AppState {
 
 
 
-    // Folder-related functions
     pub async fn get_folder_contents(
         &self,
         folder_name: &str,
     ) -> Result<Option<Vec<Uuid>>, sqlx::Error> {
         log::debug!("Attempting to get contents for folder: {}", folder_name);
 
-        let folder_row = sqlx::query("SELECT id FROM folders WHERE name = $1")
-            .bind(folder_name)
+        let folder_row = sqlx::query!("SELECT id FROM folders WHERE name = $1", folder_name)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
@@ -297,9 +262,7 @@ impl AppState {
             })?;
 
         if let Some(folder_record) = folder_row {
-            let folder_id_val: Uuid = folder_record.get::<Uuid, _>("id");
-            let asset_rows = sqlx::query("SELECT asset_id FROM asset_folders WHERE folder_id = $1")
-                .bind(folder_id_val)
+            let asset_rows = sqlx::query!("SELECT asset_id FROM asset_folders WHERE folder_id = $1", folder_record.id)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| {
@@ -307,7 +270,7 @@ impl AppState {
                     e
                 })?;
 
-            let asset_ids: Vec<Uuid> = asset_rows.into_iter().map(|row| row.get::<Uuid, _>("asset_id")).collect();
+            let asset_ids: Vec<Uuid> = asset_rows.into_iter().map(|row| row.asset_id).collect();
 
             log::info!("Retrieved {} assets from folder: {}", asset_ids.len(), folder_name);
             Ok(Some(asset_ids))
@@ -324,15 +287,14 @@ impl AppState {
     ) -> Result<(), sqlx::Error> {
         log::debug!("Attempting to insert folder contents for folder: {}, with {} assets", folder_name, contents.len());
 
-        let folder_record: (Uuid,) = sqlx::query_as("INSERT INTO folders (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = $1 RETURNING id")
-            .bind(folder_name)
+        let folder_record = sqlx::query!("INSERT INTO folders (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = $1 RETURNING id", folder_name)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| {
                 log::error!("Error upserting folder: {:?}", e);
                 e
             })?;
-        let folder_id = folder_record.0;
+        let folder_id = folder_record.id;
         log::debug!("Got/created folder with ID: {} for name: {}", folder_id, folder_name);
 
         let mut tx = self.pool.begin().await
@@ -341,8 +303,7 @@ impl AppState {
                 e
             })?;
 
-        sqlx::query("DELETE FROM asset_folders WHERE folder_id = $1")
-            .bind(folder_id)
+        sqlx::query!("DELETE FROM asset_folders WHERE folder_id = $1", folder_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| {
@@ -351,9 +312,7 @@ impl AppState {
             })?;
 
         for asset_id in contents {
-            sqlx::query("INSERT INTO asset_folders (folder_id, asset_id) VALUES ($1, $2)")
-                .bind(folder_id)
-                .bind(asset_id)
+            sqlx::query!("INSERT INTO asset_folders (folder_id, asset_id) VALUES ($1, $2)", folder_id, asset_id)
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| {
@@ -372,38 +331,37 @@ impl AppState {
         Ok(())
     }
 
-    // Methods related to posts with assets
     pub async fn get_posting_by_id_with_assets(&self, id: &Uuid) -> Result<Option<crate::posting::models::PostWithAssets>, sqlx::Error> {
-        // First get the post details
-        let post_row = sqlx::query("SELECT id, title, category, date, excerpt, folder_id, created_at, updated_at FROM posts WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| {
-                log::error!("Error getting post by id: {:?}", e);
-                e
-            })?;
+        let post = sqlx::query_as!(
+            crate::posting::models::Post,
+            "SELECT id, title, category, date, excerpt, folder_id, created_at, updated_at FROM posts WHERE id = $1",
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            log::error!("Error getting post by id: {:?}", e);
+            e
+        })?;
 
-        if let Some(row) = post_row {
-            // Get associated asset IDs for this post by looking at folder contents if the post has a folder_id
-            let folder_id: Option<String> = row.get("folder_id");
+        if let Some(post) = post {
             let mut asset_ids = Vec::new();
 
-            if let Some(folder_name) = &folder_id {
+            if let Some(folder_name) = &post.folder_id {
                 if let Some(folder_asset_ids) = self.get_folder_contents(folder_name).await? {
                     asset_ids = folder_asset_ids;
                 }
             }
 
             Ok(Some(crate::posting::models::PostWithAssets {
-                id: row.get("id"),
-                title: row.get("title"),
-                category: row.get("category"),
-                date: row.get("date"),
-                excerpt: row.get("excerpt"),
-                folder_id,
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
+                id: post.id,
+                title: post.title,
+                category: post.category,
+                date: post.date,
+                excerpt: post.excerpt,
+                folder_id: post.folder_id,
+                created_at: post.created_at,
+                updated_at: post.updated_at,
                 asset_ids,
             }))
         } else {
@@ -412,21 +370,22 @@ impl AppState {
     }
 
     pub async fn upsert_posting_with_assets(&self, post: &crate::posting::models::PostWithAssets) -> Result<(), sqlx::Error> {
-        // First, update the post record
-        sqlx::query(
-            "INSERT INTO posts (id, title, category, date, excerpt, folder_id, created_at, updated_at)
+        sqlx::query!(
+            r#"
+            INSERT INTO posts (id, title, category, date, excerpt, folder_id, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (id)
-             DO UPDATE SET title = $2, category = $3, date = $4, excerpt = $5, folder_id = $6, updated_at = $7"
+             DO UPDATE SET title = $2, category = $3, date = $4, excerpt = $5, folder_id = $6, updated_at = $7
+            "#,
+            post.id,
+            &post.title,
+            &post.category,
+            post.date,
+            &post.excerpt,
+            post.folder_id.as_deref(),
+            post.created_at,
+            post.updated_at
         )
-        .bind(post.id)
-        .bind(&post.title)
-        .bind(&post.category)
-        .bind(post.date)
-        .bind(&post.excerpt)
-        .bind(&post.folder_id)
-        .bind(post.created_at)
-        .bind(post.updated_at)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -434,26 +393,21 @@ impl AppState {
             e
         })?;
 
-        // Update folder contents if a folder_id exists and there are asset IDs
         if let Some(folder_name) = &post.folder_id {
             if !post.asset_ids.is_empty() {
                 self.insert_folder_contents(folder_name, &post.asset_ids).await?;
             }
         }
 
-        // Invalidate cache
         self.post_cache.invalidate("all_posts").await;
         Ok(())
     }
 
     pub async fn get_all_postings_with_assets(&self) -> Result<Vec<crate::posting::models::PostWithAssets>, sqlx::Error> {
-        // Get all posts
         let posts = self.get_all_posts().await?;
 
-        // Create PostWithAssets for each post by adding their associated asset IDs
         let mut result = Vec::new();
         for post in posts {
-            // Get associated asset IDs for this post by looking at folder contents if the post has a folder_id
             let mut asset_ids = Vec::new();
             if let Some(folder_name) = &post.folder_id {
                 if let Some(folder_asset_ids) = self.get_folder_contents(folder_name).await? {

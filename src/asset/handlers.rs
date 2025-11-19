@@ -391,7 +391,6 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
     info!("Executing get_all_assets_structured handler");
     debug!("Fetching all assets structured by folder using optimized SQL query.");
 
-    // Get folder-asset associations efficiently
     let folder_assets_query = r#"
         SELECT
             f.name as folder_name,
@@ -446,7 +445,6 @@ pub async fn get_all_assets_structured(data: web::Data<AppState>) -> impl Respon
                 });
             }
 
-            // Get unassigned assets separately
             let unassigned_query = r#"
                 SELECT
                     id, name, filename, url, description, created_at, updated_at
@@ -705,13 +703,11 @@ pub async fn get_assets_by_ids(
     info!("Executing get_assets_by_ids handler");
     debug!("Request received with {} IDs: {:?}", req.ids.len(), req.ids);
 
-    // Check for duplicate IDs and log a warning
     let unique_ids: std::collections::HashSet<_> = req.ids.iter().collect();
     if unique_ids.len() != req.ids.len() {
         debug!("Duplicate IDs detected in request");
     }
 
-    // Log the actual IDs being processed for debugging
     for (index, id) in req.ids.iter().enumerate() {
         debug!("Processing ID[{}]: {}", index, id);
     }
@@ -720,12 +716,11 @@ pub async fn get_assets_by_ids(
     match data.get_assets_by_ids(&req.ids).await {
         Ok(assets) => {
             info!("Successfully fetched {} assets out of {} requested IDs", assets.len(), req.ids.len());
-            
-            // Log details about the fetched assets
+
             for (index, asset) in assets.iter().enumerate() {
                 debug!("Fetched asset[{}]: ID={}, filename='{}'", index, asset.id, asset.filename);
             }
-            
+
             HttpResponse::Ok().json(assets)
         }
         Err(e) => {
@@ -766,24 +761,19 @@ pub async fn upload_asset_to_post(
     let post_id = path.into_inner();
     info!("Executing upload_asset_to_post handler for post ID: {}", post_id);
 
-    // First, check if the post exists
     match data.get_post_by_id(&post_id).await {
         Ok(Some(post)) => {
-            // Get or create the folder for this post
             let folder_id = match &post.folder_id {
                 Some(folder_id) => folder_id.clone(),
                 None => {
-                    // Create a new folder for this post if it doesn't have one
                     let new_folder_id = format!("posts/{}", post_id);
 
-                    // Create folder in storage
                     if let Err(e) = data.storage.create_folder(&new_folder_id).await {
                         error!("Failed to create folder for post {}: {}", post_id, e);
                         return HttpResponse::InternalServerError()
                             .json(ErrorResponse::internal_error("Failed to create post folder"));
                     }
 
-                    // Update the post with the folder ID
                     let mut updated_post = post.clone();
                     updated_post.folder_id = Some(new_folder_id.clone());
                     if let Err(e) = data.update_post(&updated_post).await {
@@ -808,7 +798,7 @@ pub async fn upload_asset_to_post(
                         if let Some(content_disposition) = content_disposition {
                             let field_name = content_disposition.get_name();
                             if let Some(field_name) = field_name {
-                                if field_name.starts_with("file") { // Support multiple files like file, file1, file2, etc.
+                                if field_name.starts_with("file") {
                                     let file_name = content_disposition.get_filename()
                                         .map(|s| s.to_string())
                                         .unwrap_or_else(|| format!("unnamed_file_{}.dat", uploaded_assets.len()));
@@ -820,7 +810,6 @@ pub async fn upload_asset_to_post(
 
                                     let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), file_name.replace(".", "_"), ext);
 
-                                    // Stream the file data directly to collect it in memory
                                     let mut file_data = Vec::new();
                                     while let Some(chunk_result) = field.next().await {
                                         match chunk_result {
@@ -833,7 +822,6 @@ pub async fn upload_asset_to_post(
                                         }
                                     }
 
-                                    // Upload the file to storage using the trait
                                     let upload_result = data.storage.upload_file(&unique_filename, &file_data).await;
 
                                     if let Err(e) = upload_result {
@@ -844,9 +832,8 @@ pub async fn upload_asset_to_post(
 
                                     info!("File saved successfully with filename: {}", unique_filename);
 
-                                    // Create asset record in database
                                     let new_asset = Asset::new(
-                                        file_name.clone(), // Use original filename as name
+                                        file_name.clone(),
                                         unique_filename.clone(),
                                         format!("/assets/serve/{}", unique_filename),
                                         None,
@@ -904,8 +891,7 @@ pub async fn upload_asset_to_post(
                     .json(ErrorResponse::bad_request("No files were uploaded"));
             }
 
-            // Return the first asset (or we could return all uploaded assets)
-            HttpResponse::Created().json(uploaded_assets[0].clone()) // Return first asset
+            HttpResponse::Created().json(uploaded_assets[0].clone())
         }
         Ok(None) => {
             error!("Post not found for ID: {}", post_id);
@@ -925,17 +911,11 @@ pub async fn upload_asset_to_post(
 mod tests {
     use uuid::Uuid;
 
-    // Since proper testing requires a database connection,
-    // we'll focus on ensuring the handler compiles correctly
-    // Comprehensive tests would require a full test database setup
-
     #[test]
     fn test_get_assets_by_ids_request_struct() {
-        // Test that the request struct is properly defined
         let ids = vec![Uuid::new_v4(), Uuid::new_v4()];
         let request = super::GetAssetsByIdsRequest { ids };
 
-        // Verify we can create the struct as expected
         assert_eq!(request.ids.len(), 2);
     }
 }

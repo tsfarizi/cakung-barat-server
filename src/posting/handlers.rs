@@ -183,7 +183,6 @@ pub async fn create_posting(
 
     match req {
         actix_web::web::Either::Left(json_req) => {
-            // Handle regular JSON request
             let folder_id = format!("posts/{}", Uuid::new_v4());
 
             let new_post = Post::new(
@@ -204,7 +203,6 @@ pub async fn create_posting(
             HttpResponse::Created().json(new_post)
         }
         actix_web::web::Either::Right(multipart) => {
-            // Handle multipart request with files using the dedicated parser
             let parsed_data = match MultipartParser::parse_posting_multipart(multipart).await {
                 Ok(data) => data,
                 Err(e) => {
@@ -247,14 +245,12 @@ pub async fn create_posting(
                     file_extension
                 );
 
-                // Upload the file data directly to storage using the trait
                 let result = data.storage.upload_file(&storage_filename, &file_data).await;
 
                 match result {
                     Ok(_) => {
                         info!("File uploaded successfully to Supabase: {}", storage_filename);
 
-                        // Create asset record in database
                         let asset = crate::asset::models::Asset::new(
                             original_filename.clone(),
                             storage_filename.clone(),

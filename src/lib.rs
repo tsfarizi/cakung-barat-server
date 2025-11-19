@@ -127,7 +127,7 @@ pub async fn run() -> std::io::Result<()> {
 
         App::new()
             .wrap(Compress::default())
-            .wrap(prometheus) // Add Prometheus metrics middleware
+            .wrap(prometheus)
             .wrap(cors)
             .app_data(app_state)
             .service(

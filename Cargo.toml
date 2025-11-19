@@ -27,7 +27,7 @@ postgrest = "1.6.0"
 supabase_rs = "0.5.0"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 mime_guess = "2.0"
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json","macros"] }
 moka = { version = "0.12.1", features = ["future"] }
 tempfile = "3.0"
 tokio-util = { version = "0.7", features = ["codec"] }
