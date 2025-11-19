@@ -2,7 +2,7 @@ use actix_cors::Cors;
 use actix_web::{App, HttpServer, http::header, web};
 use actix_web::middleware::Compress;
 use chrono;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 use actix_web_prometheus::PrometheusMetricsBuilder;
@@ -14,7 +14,7 @@ pub mod storage;
 
 use crate::db::AppState;
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
     pub message: String,

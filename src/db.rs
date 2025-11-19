@@ -6,12 +6,14 @@ use log;
 use moka::future::Cache;
 use std::time::Duration;
 use reqwest;
+use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
     pub post_cache: Cache<String, Vec<crate::posting::models::Post>>,
     pub http_client: reqwest::Client,
-    pub supabase_config: crate::storage::SupabaseConfig,
+    pub storage: Arc<dyn crate::storage::ObjectStorage + Send + Sync>,
 }
 
 impl AppState {
@@ -20,7 +22,6 @@ impl AppState {
         let database_url = env::var("SUPABASE_DATABASE_URL")
             .expect("SUPABASE_DATABASE_URL must be set");
 
-        // Configure and create database pool with optimized settings
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(100)
             .min_connections(10)
@@ -35,20 +36,18 @@ impl AppState {
             .max_capacity(100)
             .build();
 
-        // Create a reusable HTTP client with connection pooling
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(900))
             .user_agent("cakung-barat-server/1.0")
             .build()
             .expect("Failed to create reqwest client");
 
-        // Create Supabase configuration cached once from environment
         let supabase_config = crate::storage::SupabaseConfig::from_env()?;
+        let storage = Arc::new(crate::storage::SupabaseStorage::new(supabase_config, http_client.clone()));
 
-        Ok(AppState { pool, post_cache, http_client, supabase_config })
+        Ok(AppState { pool, post_cache, http_client, storage })
     }
 
-    // Asset-related functions
     pub async fn get_asset_by_id(&self, id: &Uuid) -> Result<Option<crate::asset::models::Asset>, sqlx::Error> {
         sqlx::query_as("SELECT id, name, filename, url, description, created_at, updated_at FROM assets WHERE id = $1")
             .bind(id)
@@ -61,7 +60,7 @@ impl AppState {
             .fetch_all(&self.pool)
             .await
     }
-    
+
     #[allow(dead_code)]
     pub async fn get_assets_by_ids(&self, ids: &Vec<Uuid>) -> Result<Vec<crate::asset::models::Asset>, sqlx::Error> {
         if ids.is_empty() {
@@ -76,10 +75,11 @@ impl AppState {
 
     pub async fn insert_asset(&self, asset: &crate::asset::models::Asset) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO assets (id, name, filename, url, description, created_at, updated_at) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7) 
-             ON CONFLICT (id) DO UPDATE 
-             SET name = $2, filename = $3, url = $4, description = $5, updated_at = $7")
+            "INSERT INTO assets (id, name, filename, url, description, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE
+             SET name = $2, filename = $3, url = $4, description = $5, updated_at = $7"
+        )
         .bind(asset.id)
         .bind(&asset.name)
         .bind(&asset.filename)
@@ -113,7 +113,7 @@ impl AppState {
                 log::error!("Error getting post by id: {:?}", e);
                 e
             })?;
-            
+
         if let Some(row) = post_row {
             // Get the folder_id for the post
             let folder_id: Option<String> = row.get("folder_id");
@@ -219,12 +219,13 @@ impl AppState {
         // Insert the post record with folder_id
         sqlx::query(
             "INSERT INTO posts (id, title, category, date, excerpt, folder_id, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        )
         .bind(post.id)
         .bind(&post.title)
         .bind(&post.category)
         .bind(post.date)
-        .bind(&post.excerpt.clone())
+        .bind(&post.excerpt)
         .bind(&post.folder_id)
         .bind(post.created_at)
         .bind(post.updated_at)
@@ -243,7 +244,8 @@ impl AppState {
         sqlx::query(
             "UPDATE posts
              SET title = $2, category = $3, date = $4, excerpt = $5, folder_id = $6, updated_at = $7
-             WHERE id = $1")
+             WHERE id = $1"
+        )
         .bind(post.id)
         .bind(&post.title)
         .bind(&post.category)
@@ -415,7 +417,8 @@ impl AppState {
             "INSERT INTO posts (id, title, category, date, excerpt, folder_id, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (id)
-             DO UPDATE SET title = $2, category = $3, date = $4, excerpt = $5, folder_id = $6, updated_at = $7")
+             DO UPDATE SET title = $2, category = $3, date = $4, excerpt = $5, folder_id = $6, updated_at = $7"
+        )
         .bind(post.id)
         .bind(&post.title)
         .bind(&post.category)

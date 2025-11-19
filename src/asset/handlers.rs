@@ -7,9 +7,96 @@ use futures::StreamExt;
 use log::{debug, error, info};
 use serde::Serialize;
 use utoipa::ToSchema;
+use tempfile::NamedTempFile;
+use std::io::Write;
+use sanitize_filename::sanitize;
+use std::path::Path as StdPath;
+use futures::TryStreamExt;
+use std::sync::Arc;
 use crate::ErrorResponse;
-use crate::{asset::models::Asset, db::AppState, storage};
+use crate::{asset::models::Asset, db::AppState};
 use uuid::Uuid;
+
+async fn multipart_save_with_storage_trait(
+    mut payload: actix_multipart::Multipart,
+    storage: &Arc<dyn crate::storage::ObjectStorage + Send + Sync>,
+) -> Result<(String, Option<Uuid>, Vec<String>, Option<String>), String> {
+    let mut filename: Option<String> = None;
+    let mut posting_id: Option<Uuid> = None;
+    let mut folder_names: Vec<String> = Vec::new();
+    let mut asset_name: Option<String> = None;
+
+    while let Some(mut field) = payload.try_next().await.map_err(|e| e.to_string())? {
+        let content_disposition = field.content_disposition().ok_or("Content-Disposition not set")?;
+        let field_name = content_disposition
+            .get_name()
+            .ok_or_else(|| "No field name".to_string())?;
+
+        match field_name {
+            "file" => {
+                let file_name = content_disposition.get_filename().ok_or_else(|| "No filename".to_string())?;
+                let sanitized_filename = sanitize(&file_name);
+
+                let ext = StdPath::new(&sanitized_filename)
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or("");
+
+                let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), sanitized_filename.replace(".", "_"), ext);
+
+                let mut temp_file = NamedTempFile::new()
+                    .map_err(|e| format!("Failed to create temporary file: {}", e))?;
+
+                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
+                    temp_file.write_all(&chunk)
+                        .map_err(|e| format!("Failed to write chunk to temp file: {}", e))?;
+                }
+
+                let file_data = std::fs::read(temp_file.path()).map_err(|e| format!("Failed to read temp file: {}", e))?;
+                storage.upload_file(&unique_filename, &file_data).await?;
+
+                filename = Some(unique_filename);
+            }
+            "posting_id" => {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
+                    bytes.extend_from_slice(&chunk);
+                }
+                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+                posting_id = Uuid::parse_str(&value).ok();
+            }
+            "folders" => {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
+                    bytes.extend_from_slice(&chunk);
+                }
+                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+
+                folder_names = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            "name" => {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
+                    bytes.extend_from_slice(&chunk);
+                }
+                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+                asset_name = Some(value);
+            }
+            _ => {
+                continue;
+            }
+        }
+    }
+
+    match filename {
+        Some(name) => Ok((name, posting_id, folder_names, asset_name)),
+        None => Err("No file was uploaded".to_string()),
+    }
+}
 
 
 #[derive(Serialize, ToSchema)]
@@ -41,7 +128,7 @@ pub struct AllAssetsResponse {
 pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl Responder {
     info!("Executing upload_asset handler");
     debug!("Attempting to save file from multipart payload.");
-    match storage::save_file(payload, &data.http_client, &data.supabase_config).await {
+    match multipart_save_with_storage_trait(payload, &data.storage).await {
         Ok((filename, posting_id_opt, folder_names, asset_name)) => {
             info!("File saved successfully with filename: {}", filename);
             let name = asset_name.unwrap_or_else(|| filename.clone());
@@ -83,11 +170,16 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
                     "Associating asset {:?} with folder '{}'",
                     new_asset.id, folder_name
                 );
-                let mut asset_ids = data
-                    .get_folder_contents(&folder_name)
-                    .await
-                    .unwrap_or_default()
-                    .unwrap_or_default();
+                let folder_contents_result = data.get_folder_contents(&folder_name).await;
+                let mut asset_ids = match folder_contents_result {
+                    Ok(Some(ids)) => ids,
+                    Ok(None) => Vec::new(),
+                    Err(e) => {
+                        error!("Database error when getting folder contents: {}", e);
+                        return HttpResponse::InternalServerError()
+                            .json(ErrorResponse::internal_error("Failed to retrieve folder contents"));
+                    }
+                };
                 asset_ids.push(new_asset.id);
                 if let Err(e) = data.insert_folder_contents(&folder_name, &asset_ids).await {
                     error!("Failed to associate asset with folder: {}", e);
@@ -176,7 +268,7 @@ async fn delete_asset_by_id(asset_id_to_delete: Uuid, data: web::Data<AppState>)
                 "Attempting to delete physical asset file: {}",
                 &asset.filename
             );
-            if let Err(e) = storage::delete_asset_file(&asset.filename, &data.http_client, &data.supabase_config).await {
+            if let Err(e) = data.storage.delete_file(&asset.filename).await {
                 error!(
                     "Failed to delete physical asset file {}: {}.",
                     asset.filename, e
@@ -414,7 +506,7 @@ pub async fn serve_asset(req: actix_web::HttpRequest, data: web::Data<AppState>)
         Ok(assets) => {
             if let Some(asset) = assets.iter().find(|a| a.filename == filename) {
                 info!("Asset found for filename: {}. Redirecting to Supabase storage.", &filename);
-                let supabase_url = storage::get_supabase_asset_url(&asset.filename, &data.supabase_config);
+                let supabase_url = data.storage.get_asset_url(&asset.filename);
                 return HttpResponse::TemporaryRedirect()
                     .append_header(("Location", supabase_url))
                     .finish();
@@ -466,7 +558,7 @@ pub async fn create_folder_handler(
         "Attempting to create folder '{}' in Supabase storage.",
         &req.folder_name
     );
-    match storage::create_folder(&req.folder_name, &data.http_client, &data.supabase_config).await {
+    match data.storage.create_folder(&req.folder_name).await {
         Ok(_) => {
             info!("Folder '{}' created in Supabase storage.", &req.folder_name);
             debug!(
@@ -684,8 +776,8 @@ pub async fn upload_asset_to_post(
                     // Create a new folder for this post if it doesn't have one
                     let new_folder_id = format!("posts/{}", post_id);
 
-                    // Create folder in Supabase storage
-                    if let Err(e) = storage::create_folder(&new_folder_id, &data.http_client, &data.supabase_config).await {
+                    // Create folder in storage
+                    if let Err(e) = data.storage.create_folder(&new_folder_id).await {
                         error!("Failed to create folder for post {}: {}", post_id, e);
                         return HttpResponse::InternalServerError()
                             .json(ErrorResponse::internal_error("Failed to create post folder"));
@@ -718,13 +810,13 @@ pub async fn upload_asset_to_post(
                             if let Some(field_name) = field_name {
                                 if field_name.starts_with("file") { // Support multiple files like file, file1, file2, etc.
                                     let file_name = content_disposition.get_filename()
-                                        .unwrap_or("unnamed_file")
-                                        .to_string();
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| format!("unnamed_file_{}.dat", uploaded_assets.len()));
 
-                                    let ext = std::path::Path::new(&file_name)
+                                    let ext = StdPath::new(&file_name)
                                         .extension()
                                         .and_then(std::ffi::OsStr::to_str)
-                                        .unwrap_or("");
+                                        .unwrap_or("dat");
 
                                     let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), file_name.replace(".", "_"), ext);
 
@@ -741,13 +833,8 @@ pub async fn upload_asset_to_post(
                                         }
                                     }
 
-                                    // Upload the file to Supabase storage using the new public function
-                                    let upload_result = storage::upload_file_to_supabase(
-                                        &unique_filename,
-                                        &file_data,
-                                        &data.http_client,
-                                        &data.supabase_config
-                                    ).await;
+                                    // Upload the file to storage using the trait
+                                    let upload_result = data.storage.upload_file(&unique_filename, &file_data).await;
 
                                     if let Err(e) = upload_result {
                                         error!("Failed to upload file to Supabase: {}", e);
@@ -774,11 +861,16 @@ pub async fn upload_asset_to_post(
                                     info!("Asset {:?} created and stored in database.", new_asset.id);
 
                                     // Associate the asset with the post folder
-                                    let mut asset_ids = data
-                                        .get_folder_contents(&folder_id)
-                                        .await
-                                        .unwrap_or_default()
-                                        .unwrap_or_default();
+                                    let folder_contents_result = data.get_folder_contents(&folder_id).await;
+                                    let mut asset_ids = match folder_contents_result {
+                                        Ok(Some(ids)) => ids,
+                                        Ok(None) => Vec::new(),
+                                        Err(e) => {
+                                            error!("Database error when getting folder contents for post: {}", e);
+                                            errors.push(format!("Failed to retrieve folder contents for post: {}", e));
+                                            continue;
+                                        }
+                                    };
                                     asset_ids.push(new_asset.id);
                                     if let Err(e) = data.insert_folder_contents(&folder_id, &asset_ids).await {
                                         error!("Failed to associate asset with post folder: {}", e);

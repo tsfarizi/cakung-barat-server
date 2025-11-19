@@ -17,7 +17,7 @@ pub struct FolderContent {
     pub size: Option<u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SupabaseConfig {
     pub supabase_url: String,
     pub supabase_anon_key: String,
@@ -38,6 +38,50 @@ impl SupabaseConfig {
         Ok(SupabaseConfig { supabase_url, supabase_anon_key, bucket_name })
     }
 }
+
+#[async_trait::async_trait]
+pub trait ObjectStorage {
+    async fn upload_file(&self, filename: &str, file_data: &[u8]) -> Result<(), String>;
+    async fn delete_file(&self, filename: &str) -> Result<(), String>;
+    async fn create_folder(&self, folder_name: &str) -> Result<(), String>;
+    async fn list_folder_contents(&self, folder_name: &str) -> Result<Vec<FolderContent>, String>;
+    fn get_asset_url(&self, filename: &str) -> String;
+}
+
+pub struct SupabaseStorage {
+    pub config: SupabaseConfig,
+    pub client: reqwest::Client,
+}
+
+impl SupabaseStorage {
+    pub fn new(config: SupabaseConfig, client: reqwest::Client) -> Self {
+        Self { config, client }
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStorage for SupabaseStorage {
+    async fn upload_file(&self, filename: &str, file_data: &[u8]) -> Result<(), String> {
+        upload_file_to_supabase(filename, file_data, &self.client, &self.config).await
+    }
+
+    async fn delete_file(&self, filename: &str) -> Result<(), String> {
+        delete_asset_file(filename, &self.client, &self.config).await
+    }
+
+    async fn create_folder(&self, folder_name: &str) -> Result<(), String> {
+        create_folder(folder_name, &self.client, &self.config).await
+    }
+
+    async fn list_folder_contents(&self, folder_name: &str) -> Result<Vec<FolderContent>, String> {
+        list_folder_contents(folder_name, &self.client, &self.config).await
+    }
+
+    fn get_asset_url(&self, filename: &str) -> String {
+        get_supabase_asset_url(filename, &self.config)
+    }
+}
+
 
 pub async fn save_file(
     mut payload: Multipart,

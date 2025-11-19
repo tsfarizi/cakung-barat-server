@@ -13,9 +13,7 @@ pub struct Post {
     pub category: String,
     #[schema(example = "2025-11-05")]
     pub date: NaiveDate,
-    #[schema(
-        example = "Ini adalah ringkasan postingan."
-    )]
+    #[schema(example = "Ini adalah ringkasan postingan.")]
     pub excerpt: String,
     #[schema(example = "posts/f1e2d3c4-b5a6-7890-1234-567890abcdef")]
     pub folder_id: Option<String>,
@@ -50,7 +48,7 @@ pub struct CreatePostingRequest {
 
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdatePostingRequest {
     #[schema(example = "Judul Posting Diperbarui")]
     pub title: Option<String>,

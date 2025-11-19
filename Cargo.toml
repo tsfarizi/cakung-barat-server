@@ -34,6 +34,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 prometheus = "0.14.0"
 actix-web-prometheus = "0.1"
 lazy_static = "1.4.0"
+thiserror = "1.0"
+async-trait = "0.1"
 
 [lib]
 name = "cakung_barat_server"

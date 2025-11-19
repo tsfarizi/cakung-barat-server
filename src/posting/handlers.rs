@@ -5,7 +5,6 @@ use actix_web::{
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
-use futures::StreamExt;
 
 use crate::{
     ErrorResponse,
@@ -14,6 +13,9 @@ use crate::{
 };
 use chrono::{NaiveDate};
 use uuid::Uuid;
+
+use crate::posting::multipart_parser::MultipartParser;
+
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PostingResponse {
@@ -65,11 +67,8 @@ pub async fn get_all_postings(data: web::Data<AppState>, pagination: Query<Pagin
     info!("Executing get_all_postings handler with pagination");
     debug!("Attempting to fetch posts with pagination: page={}, limit={}", pagination.page, pagination.limit);
 
-    // Calculate offset
     let offset = (pagination.page - 1) * pagination.limit;
 
-    // For the default case (page=1, limit=20) or cwhen requesting first page with small limit,
-    // use cached version to benefit from the N+1 query fix
     if pagination.page == 1 && pagination.limit <= 50 {
         match data.get_all_posts_cached().await {
             Ok(posts) => {
@@ -77,7 +76,6 @@ pub async fn get_all_postings(data: web::Data<AppState>, pagination: Query<Pagin
                     "Successfully fetched {} posts from cache and applying pagination.",
                     posts.len()
                 );
-                // Apply pagination manually to cached results for first page
                 let paginated_posts: Vec<crate::posting::models::Post> = posts.into_iter()
                     .skip(offset as usize)
                     .take(pagination.limit as usize)
@@ -86,7 +84,6 @@ pub async fn get_all_postings(data: web::Data<AppState>, pagination: Query<Pagin
             }
             Err(e) => {
                 error!("Failed to get posts from cache, falling back to database: {}", e);
-                // Fallback to paginated query
                 match data.get_posts_paginated(pagination.limit, offset).await {
                     Ok(posts) => {
                         info!(
@@ -104,7 +101,6 @@ pub async fn get_all_postings(data: web::Data<AppState>, pagination: Query<Pagin
             }
         }
     } else {
-        // For other pagination requests (including page > 1 or larger limits), use paginated query directly
         match data.get_posts_paginated(pagination.limit, offset).await {
             Ok(posts) => {
                 info!(
@@ -207,58 +203,22 @@ pub async fn create_posting(
             info!("New post created successfully with ID: {:?}", new_post.id);
             HttpResponse::Created().json(new_post)
         }
-        actix_web::web::Either::Right(mut multipart) => {
-            // Handle multipart request with files
-            // Parse the multipart data to extract JSON metadata and files
-            let mut title = String::new();
-            let mut category = String::new();
-            let mut excerpt = String::new();
-            let mut files_data: Vec<(Vec<u8>, String)> = Vec::new(); // (file_data, original_filename)
-
-            while let Some(item) = multipart.next().await {
-                let mut field = item.unwrap();
-                let content_disposition = field.content_disposition().unwrap();
-                let name = content_disposition.get_name().unwrap();
-
-                // Extract the filename before consuming the field
-                let maybe_filename = content_disposition.get_filename().map(|s| s.to_string());
-
-                if name == "metadata" {
-                    // Handle JSON metadata
-                    let mut buffer = Vec::new();
-                    while let Some(chunk) = field.next().await {
-                        let data_chunk = chunk.unwrap();
-                        buffer.extend_from_slice(&data_chunk);
-                    }
-                    let metadata_str = String::from_utf8(buffer).unwrap();
-                    let metadata: CreatePostingRequest = serde_json::from_str(&metadata_str).unwrap();
-                    title = metadata.title;
-                    category = metadata.category;
-                    excerpt = metadata.excerpt;
-                } else if name.starts_with("file") {
-                    // Handle uploaded files
-                    let mut file_buffer = Vec::new();
-                    while let Some(chunk) = field.next().await {
-                        let data_chunk = chunk.unwrap();
-                        file_buffer.extend_from_slice(&data_chunk);
-                    }
-
-                    // Use the pre-extracted filename
-                    let original_filename = match maybe_filename {
-                        Some(fname) => fname,
-                        None => format!("file_{}.dat", files_data.len()),
-                    };
-
-                    files_data.push((file_buffer, original_filename));
+        actix_web::web::Either::Right(multipart) => {
+            // Handle multipart request with files using the dedicated parser
+            let parsed_data = match MultipartParser::parse_posting_multipart(multipart).await {
+                Ok(data) => data,
+                Err(e) => {
+                    error!("Failed to parse multipart data: {}", e);
+                    return e.into();
                 }
-            }
+            };
 
             // Create a new post with a folder for its assets
             let folder_id = format!("posts/{}", Uuid::new_v4());
             let new_post = Post::new(
-                title,
-                category,
-                excerpt,
+                parsed_data.title,
+                parsed_data.category,
+                parsed_data.excerpt,
                 Some(folder_id.clone()),
             );
 
@@ -273,7 +233,8 @@ pub async fn create_posting(
             info!("New post created successfully with ID: {:?}", new_post.id);
 
             // Handle file uploads and associate them with the post folder
-            for (i, (file_data, original_filename)) in files_data.iter().enumerate() {
+            for (i, item) in parsed_data.files_data.iter().enumerate() {
+                let (file_data, original_filename) = item;
                 // Create a unique filename for storage
                 let file_extension = std::path::Path::new(&original_filename)
                     .extension()
@@ -286,13 +247,8 @@ pub async fn create_posting(
                     file_extension
                 );
 
-                // Upload the file data directly to Supabase storage using the new public function
-                let result = crate::storage::upload_file_to_supabase(
-                    &storage_filename,
-                    &file_data,
-                    &data.http_client,
-                    &data.supabase_config
-                ).await;
+                // Upload the file data directly to storage using the trait
+                let result = data.storage.upload_file(&storage_filename, &file_data).await;
 
                 match result {
                     Ok(_) => {
