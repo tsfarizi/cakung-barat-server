@@ -36,6 +36,7 @@ impl SupabaseConfig {
 #[async_trait::async_trait]
 pub trait ObjectStorage {
     async fn upload_file(&self, filename: &str, file_data: &[u8]) -> Result<(), String>;
+    async fn download_file(&self, filename: &str) -> Result<Vec<u8>, String>;
     async fn delete_file(&self, filename: &str) -> Result<(), String>;
     async fn create_folder(&self, folder_name: &str) -> Result<(), String>;
     async fn list_folder_contents(&self, folder_name: &str) -> Result<Vec<FolderContent>, String>;
@@ -57,6 +58,10 @@ impl SupabaseStorage {
 impl ObjectStorage for SupabaseStorage {
     async fn upload_file(&self, filename: &str, file_data: &[u8]) -> Result<(), String> {
         upload_file_to_supabase(filename, file_data, &self.client, &self.config).await
+    }
+
+    async fn download_file(&self, filename: &str) -> Result<Vec<u8>, String> {
+        download_file_from_supabase(filename, &self.client, &self.config).await
     }
 
     async fn delete_file(&self, filename: &str) -> Result<(), String> {
@@ -106,6 +111,32 @@ pub async fn upload_file_to_supabase(filename: &str, file_data: &[u8], client: &
         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
         log::error!("Upload failed for file {} with status: {}: {}", filename, status, error_text);
         Err(format!("Upload failed with status: {}", status))
+    }
+}
+
+pub async fn download_file_from_supabase(filename: &str, client: &reqwest::Client, config: &SupabaseConfig) -> Result<Vec<u8>, String> {
+    log::info!("Attempting to download file from Supabase storage: {}", filename);
+
+    let download_url = format!("{}/storage/v1/object/{}/{}", config.supabase_url, config.bucket_name, filename);
+    log::debug!("Supabase download URL: {}", download_url);
+
+    let response = client
+        .get(&download_url)
+        .header("Authorization", format!("Bearer {}", config.supabase_anon_key))
+        .header("apikey", &config.supabase_anon_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if response.status().is_success() {
+        log::info!("Successfully downloaded file from Supabase storage: {}", filename);
+        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+        Ok(bytes.to_vec())
+    } else {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        log::error!("Download failed for file {} with status: {}: {}", filename, status, error_text);
+        Err(format!("Download failed with status: {}", status))
     }
 }
 

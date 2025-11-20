@@ -12,6 +12,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub pool: PgPool,
     pub post_cache: Cache<String, Vec<crate::posting::models::Post>>,
+    pub organization_cache: Cache<String, Vec<crate::organization::model::OrganizationMember>>,
     pub http_client: reqwest::Client,
     pub storage: Arc<dyn crate::storage::ObjectStorage + Send + Sync>,
 }
@@ -42,6 +43,11 @@ impl AppState {
             .max_capacity(100)
             .build();
 
+        let organization_cache = Cache::builder()
+            .time_to_live(Duration::from_secs(10 * 60))
+            .max_capacity(10)
+            .build();
+
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(900))
             .user_agent("cakung-barat-server/1.0")
@@ -50,7 +56,7 @@ impl AppState {
 
         let storage = Arc::new(crate::storage::SupabaseStorage::new(supabase_config, http_client.clone()));
 
-        Ok(AppState { pool, post_cache, http_client, storage })
+        Ok(AppState { pool, post_cache, organization_cache, http_client, storage })
     }
 
     pub async fn new_with_pool_and_storage(
@@ -62,13 +68,18 @@ impl AppState {
             .max_capacity(100)
             .build();
 
+        let organization_cache = Cache::builder()
+            .time_to_live(Duration::from_secs(10 * 60))
+            .max_capacity(10)
+            .build();
+
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(900))
             .user_agent("cakung-barat-server/1.0")
             .build()
             .expect("Failed to create reqwest client");
 
-        Ok(AppState { pool, post_cache, http_client, storage })
+        Ok(AppState { pool, post_cache, organization_cache, http_client, storage })
     }
 
     pub async fn get_asset_by_id(&self, id: &Uuid) -> Result<Option<crate::asset::models::Asset>, sqlx::Error> {

@@ -12,6 +12,7 @@ pub mod asset;
 pub mod db;
 pub mod posting;
 pub mod storage;
+pub mod organization;
 
 use crate::db::AppState;
 
@@ -55,19 +56,23 @@ pub async fn run() -> std::io::Result<()> {
     #[derive(OpenApi)]
     #[openapi(
         paths(
-            posting::handlers::get_all_postings,
-            posting::handlers::get_posting_by_id,
-            posting::handlers::create_posting,
-            posting::handlers::update_posting,
-            posting::handlers::delete_posting,
-            asset::handlers::upload_asset,
-            asset::handlers::upload_asset_to_post,
-            asset::handlers::delete_asset,
-            asset::handlers::get_asset_by_id,
-            asset::handlers::get_all_assets_structured,
-            asset::handlers::create_folder_handler,
-            asset::handlers::list_folder_handler,
-            asset::handlers::get_assets_by_ids,
+            crate::posting::handlers::get_all_postings,
+            crate::posting::handlers::create_posting,
+            crate::posting::handlers::get_posting_by_id,
+            crate::posting::handlers::update_posting,
+            crate::posting::handlers::delete_posting,
+            crate::asset::handlers::upload_asset,
+            crate::asset::handlers::upload_asset_to_post,
+            crate::asset::handlers::delete_asset,
+            crate::asset::handlers::get_asset_by_id,
+            crate::asset::handlers::get_all_assets_structured,
+            crate::asset::handlers::create_folder_handler,
+            crate::asset::handlers::list_folder_handler,
+            crate::asset::handlers::get_assets_by_ids,
+            crate::organization::routes::get_all_members,
+            crate::organization::routes::create_member,
+            crate::organization::routes::update_member,
+            crate::organization::routes::delete_member
         ),
         components(
             schemas(
@@ -84,11 +89,15 @@ pub async fn run() -> std::io::Result<()> {
                 asset::handlers::FolderWithAssets,
                 storage::FolderContent,
                 ErrorResponse,
+                organization::model::OrganizationMember,
+                organization::model::CreateMemberRequest,
+                organization::model::UpdateMemberRequest,
             )
         ),
         tags(
             (name = "Posting Service", description = "Posting CRUD endpoints."),
-            (name = "Asset Service", description = "Asset and Folder endpoints.")
+            (name = "Asset Service", description = "Asset and Folder endpoints."),
+            (name = "Organization", description = "Organization Structure endpoints.")
         ),
         servers(
             (url = "https://cakung-barat-server-1065513777845.asia-southeast1.run.app", description = "Production server"),
@@ -100,7 +109,13 @@ pub async fn run() -> std::io::Result<()> {
 
     dotenvy::dotenv().ok(); // Load .env file
     let supabase_config = crate::storage::SupabaseConfig::from_env().unwrap();
-    let app_state = web::Data::new(AppState::new_with_config(supabase_config).await.unwrap());
+    let app_state = match AppState::new_with_config(supabase_config).await {
+        Ok(state) => web::Data::new(state),
+        Err(e) => {
+            log::error!("Failed to connect to database. Please check your SUPABASE_DATABASE_URL in .env and ensure the database is running. Error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let prometheus = PrometheusMetricsBuilder::new("cakung_barat_server")
         .endpoint("/metrics")
@@ -133,8 +148,10 @@ pub async fn run() -> std::io::Result<()> {
             .wrap(prometheus)
             .wrap(cors)
             .app_data(app_state)
+
             .service(
                 web::scope("/api")
+                    .configure(organization::routes::config) // Register organization routes
                     .service(
                         web::resource("/postings")
                             .route(web::get().to(posting::handlers::get_all_postings))
