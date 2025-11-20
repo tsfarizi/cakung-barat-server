@@ -98,7 +98,7 @@ pub async fn run() -> std::io::Result<()> {
             (name = "Organization", description = "Organization Structure endpoints.")
         ),
         servers(
-            (url = "https://cakung-barat-server-1065513777845.asia-southeast1.run.app", description = "Production server"),
+            (url = "https://cakung-barat-server-1065513777845.asia-southeast2.run.app", description = "Production server"),
             (url = "https://5w4m7wvp-8080.asse.devtunnels.ms", description = "Staging server"),
             (url = "http://127.0.0.1:8080", description = "Localhost Staging server")
         )
@@ -126,7 +126,7 @@ pub async fn run() -> std::io::Result<()> {
         let app_state = app_state.clone();
         let prometheus = prometheus.clone();
         let cors = Cors::default()
-            .allowed_origin("https://cakung-barat-server-1065513777845.asia-southeast1.run.app")
+            .allowed_origin("https://cakung-barat-server-1065513777845.asia-southeast2.run.app")
             .allowed_origin("https://tsfarizi.github.io")
             .allowed_origin("http://localhost:5173")
             .allowed_origin("http://localhost:3000")
