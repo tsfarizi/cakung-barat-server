@@ -2,6 +2,7 @@ use actix_cors::Cors;
 use actix_web::{App, HttpServer, http::header, web};
 use actix_web::middleware::Compress;
 use chrono;
+use dotenvy;
 use serde::{Serialize, Deserialize};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
@@ -97,7 +98,9 @@ pub async fn run() -> std::io::Result<()> {
     )]
     struct ApiDoc;
 
-    let app_state = web::Data::new(AppState::new().await.unwrap());
+    dotenvy::dotenv().ok(); // Load .env file
+    let supabase_config = crate::storage::SupabaseConfig::from_env().unwrap();
+    let app_state = web::Data::new(AppState::new_with_config(supabase_config).await.unwrap());
 
     let prometheus = PrometheusMetricsBuilder::new("cakung_barat_server")
         .endpoint("/metrics")

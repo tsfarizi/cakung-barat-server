@@ -7,96 +7,11 @@ use futures::StreamExt;
 use log::{debug, error, info};
 use serde::Serialize;
 use utoipa::ToSchema;
-use tempfile::NamedTempFile;
-use std::io::Write;
 use sanitize_filename::sanitize;
 use std::path::Path as StdPath;
-use futures::TryStreamExt;
-use std::sync::Arc;
 use crate::ErrorResponse;
-use crate::{asset::models::Asset, db::AppState};
+use crate::{asset::models::Asset, db::AppState, posting::multipart_parser::{MultipartParser, MultipartParseError}};
 use uuid::Uuid;
-
-async fn multipart_save_with_storage_trait(
-    mut payload: actix_multipart::Multipart,
-    storage: &Arc<dyn crate::storage::ObjectStorage + Send + Sync>,
-) -> Result<(String, Option<Uuid>, Vec<String>, Option<String>), String> {
-    let mut filename: Option<String> = None;
-    let mut posting_id: Option<Uuid> = None;
-    let mut folder_names: Vec<String> = Vec::new();
-    let mut asset_name: Option<String> = None;
-
-    while let Some(mut field) = payload.try_next().await.map_err(|e| e.to_string())? {
-        let content_disposition = field.content_disposition().ok_or("Content-Disposition not set")?;
-        let field_name = content_disposition
-            .get_name()
-            .ok_or_else(|| "No field name".to_string())?;
-
-        match field_name {
-            "file" => {
-                let file_name = content_disposition.get_filename().ok_or_else(|| "No filename".to_string())?;
-                let sanitized_filename = sanitize(&file_name);
-
-                let ext = StdPath::new(&sanitized_filename)
-                    .extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .unwrap_or("");
-
-                let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), sanitized_filename.replace(".", "_"), ext);
-
-                let mut temp_file = NamedTempFile::new()
-                    .map_err(|e| format!("Failed to create temporary file: {}", e))?;
-
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    temp_file.write_all(&chunk)
-                        .map_err(|e| format!("Failed to write chunk to temp file: {}", e))?;
-                }
-
-                let file_data = std::fs::read(temp_file.path()).map_err(|e| format!("Failed to read temp file: {}", e))?;
-                storage.upload_file(&unique_filename, &file_data).await?;
-
-                filename = Some(unique_filename);
-            }
-            "posting_id" => {
-                let mut bytes = Vec::new();
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    bytes.extend_from_slice(&chunk);
-                }
-                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-                posting_id = Uuid::parse_str(&value).ok();
-            }
-            "folders" => {
-                let mut bytes = Vec::new();
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    bytes.extend_from_slice(&chunk);
-                }
-                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-
-                folder_names = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            "name" => {
-                let mut bytes = Vec::new();
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    bytes.extend_from_slice(&chunk);
-                }
-                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-                asset_name = Some(value);
-            }
-            _ => {
-                continue;
-            }
-        }
-    }
-
-    match filename {
-        Some(name) => Ok((name, posting_id, folder_names, asset_name)),
-        None => Err("No file was uploaded".to_string()),
-    }
-}
 
 
 #[derive(Serialize, ToSchema)]
@@ -127,15 +42,32 @@ pub struct AllAssetsResponse {
 )]
 pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl Responder {
     info!("Executing upload_asset handler");
-    debug!("Attempting to save file from multipart payload.");
-    match multipart_save_with_storage_trait(payload, &data.storage).await {
-        Ok((filename, posting_id_opt, folder_names, asset_name)) => {
-            info!("File saved successfully with filename: {}", filename);
-            let name = asset_name.unwrap_or_else(|| filename.clone());
+    debug!("Attempting to parse multipart payload.");
+
+    match MultipartParser::parse_asset_multipart(payload).await {
+        Ok((file_data, original_filename, asset_name, posting_id_opt, folder_names)) => {
+            // Generate a unique filename for storage
+            let ext = StdPath::new(&original_filename)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("");
+
+            let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), sanitize(&original_filename).replace(".", "_"), ext);
+
+            // Upload file to storage
+            debug!("Attempting to upload file to storage with unique name: {}", unique_filename);
+            if let Err(e) = data.storage.upload_file(&unique_filename, &file_data).await {
+                error!("Failed to upload file to storage: {}", e);
+                return HttpResponse::InternalServerError()
+                    .json(ErrorResponse::internal_error("Failed to upload file"));
+            }
+
+            info!("File saved successfully with filename: {}", unique_filename);
+            let name = asset_name.unwrap_or_else(|| original_filename.clone());
             let new_asset = Asset::new(
                 name,
-                filename.clone(),
-                format!("/assets/serve/{}", filename),
+                unique_filename.clone(),
+                format!("/assets/serve/{}", unique_filename),
                 None,
             );
 
@@ -225,9 +157,13 @@ pub async fn upload_asset(payload: Multipart, data: web::Data<AppState>) -> impl
 
             HttpResponse::Created().json(new_asset)
         }
-        Err(e) => {
-            error!("Failed during file upload process: {}", e);
+        Err(MultipartParseError::FieldError(e)) | Err(MultipartParseError::MetadataError(e)) | Err(MultipartParseError::Utf8Error(e)) | Err(MultipartParseError::SerializationError(e)) => {
+            error!("Failed during multipart parsing: {}", e);
             HttpResponse::BadRequest().json(ErrorResponse::bad_request(&e))
+        }
+        Err(MultipartParseError::IoError(e)) => {
+            error!("IO error during multipart parsing: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse::internal_error(&e))
         }
     }
 }

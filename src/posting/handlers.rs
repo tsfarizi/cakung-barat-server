@@ -69,51 +69,18 @@ pub async fn get_all_postings(data: web::Data<AppState>, pagination: Query<Pagin
 
     let offset = (pagination.page - 1) * pagination.limit;
 
-    if pagination.page == 1 && pagination.limit <= 50 {
-        match data.get_all_posts_cached().await {
-            Ok(posts) => {
-                info!(
-                    "Successfully fetched {} posts from cache and applying pagination.",
-                    posts.len()
-                );
-                let paginated_posts: Vec<crate::posting::models::Post> = posts.into_iter()
-                    .skip(offset as usize)
-                    .take(pagination.limit as usize)
-                    .collect();
-                HttpResponse::Ok().json(paginated_posts)
-            }
-            Err(e) => {
-                error!("Failed to get posts from cache, falling back to database: {}", e);
-                match data.get_posts_paginated(pagination.limit, offset).await {
-                    Ok(posts) => {
-                        info!(
-                            "Successfully fetched {} posts from the database.",
-                            posts.len()
-                        );
-                        HttpResponse::Ok().json(posts)
-                    }
-                    Err(e) => {
-                        error!("Failed to get posts from database: {}", e);
-                        HttpResponse::InternalServerError()
-                            .json(ErrorResponse::internal_error("Failed to retrieve posts"))
-                    }
-                }
-            }
+    match data.get_posts_smart_cached(pagination.limit, offset).await {
+        Ok(posts) => {
+            info!(
+                "Successfully fetched {} posts using smart cache strategy.",
+                posts.len()
+            );
+            HttpResponse::Ok().json(posts)
         }
-    } else {
-        match data.get_posts_paginated(pagination.limit, offset).await {
-            Ok(posts) => {
-                info!(
-                    "Successfully fetched {} posts from the database.",
-                    posts.len()
-                );
-                HttpResponse::Ok().json(posts)
-            }
-            Err(e) => {
-                error!("Failed to get posts from database: {}", e);
-                HttpResponse::InternalServerError()
-                    .json(ErrorResponse::internal_error("Failed to retrieve posts"))
-            }
+        Err(e) => {
+            error!("Failed to get posts: {}", e);
+            HttpResponse::InternalServerError()
+                .json(ErrorResponse::internal_error("Failed to retrieve posts"))
         }
     }
 }

@@ -1,13 +1,7 @@
-use actix_multipart::Multipart;
-use futures::TryStreamExt;
 use sanitize_filename::sanitize;
-use std::path::Path;
-use uuid::Uuid;
 use reqwest;
 use serde_json::Value;
 use log;
-use tempfile::NamedTempFile;
-use std::io::Write;
 use mime_guess;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, utoipa::ToSchema)]
@@ -83,90 +77,6 @@ impl ObjectStorage for SupabaseStorage {
 }
 
 
-pub async fn save_file(
-    mut payload: Multipart,
-    client: &reqwest::Client,
-    config: &SupabaseConfig,
-) -> Result<(String, Option<Uuid>, Vec<String>, Option<String>), String> {
-    let mut filename: Option<String> = None;
-    let mut posting_id: Option<Uuid> = None;
-    let mut folder_names: Vec<String> = Vec::new();
-    let mut asset_name: Option<String> = None;
-
-    while let Some(mut field) = payload.try_next().await.map_err(|e| e.to_string())? {
-        let content_disposition = field.content_disposition().ok_or("Content-Disposition not set")?;
-        let field_name = content_disposition
-            .get_name()
-            .ok_or_else(|| "No field name".to_string())?;
-
-        match field_name {
-            "file" => {
-                let file_name = content_disposition.get_filename().ok_or_else(|| "No filename".to_string())?;
-                let sanitized_filename = sanitize(&file_name);
-
-                let ext = Path::new(&sanitized_filename)
-                    .extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .unwrap_or("");
-
-                let unique_filename = format!("{}_{}.{}", Uuid::new_v4(), sanitized_filename.replace(".", "_"), ext);
-
-                let mut temp_file = NamedTempFile::new()
-                    .map_err(|e| format!("Failed to create temporary file: {}", e))?;
-
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    temp_file.write_all(&chunk)
-                        .map_err(|e| format!("Failed to write chunk to temp file: {}", e))?;
-                }
-
-                use std::io::Seek;
-                temp_file.as_file_mut().seek(std::io::SeekFrom::Start(0))
-                    .map_err(|e| format!("Failed to seek temp file: {}", e))?;
-
-                upload_file_to_supabase(&unique_filename, std::fs::read(temp_file.path()).map_err(|e| format!("Failed to read temp file: {}", e))?.as_slice(), client, config).await?;
-
-                filename = Some(unique_filename);
-            }
-            "posting_id" => {
-                let mut bytes = Vec::new();
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    bytes.extend_from_slice(&chunk);
-                }
-                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-                posting_id = Uuid::parse_str(&value).ok();
-            }
-            "folders" => {
-                let mut bytes = Vec::new();
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    bytes.extend_from_slice(&chunk);
-                }
-                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-
-                folder_names = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            "name" => {
-                let mut bytes = Vec::new();
-                while let Some(chunk) = field.try_next().await.map_err(|e| e.to_string())? {
-                    bytes.extend_from_slice(&chunk);
-                }
-                let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-                asset_name = Some(value);
-            }
-            _ => {
-                continue;
-            }
-        }
-    }
-
-    match filename {
-        Some(name) => Ok((name, posting_id, folder_names, asset_name)),
-        None => Err("No file was uploaded".to_string()),
-    }
-}
 
 pub async fn upload_file_to_supabase(filename: &str, file_data: &[u8], client: &reqwest::Client, config: &SupabaseConfig) -> Result<(), String> {
     log::info!("Attempting to upload asset file to Supabase storage: {}", filename);

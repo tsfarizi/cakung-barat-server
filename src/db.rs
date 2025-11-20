@@ -18,6 +18,12 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        dotenvy::dotenv().ok(); // Load .env file
+        let supabase_config = crate::storage::SupabaseConfig::from_env()?;
+        Self::new_with_config(supabase_config).await
+    }
+
+    pub async fn new_with_config(supabase_config: crate::storage::SupabaseConfig) -> Result<Self, Box<dyn std::error::Error>> {
         dotenv().ok();
         let database_url = env::var("SUPABASE_DATABASE_URL")
             .expect("SUPABASE_DATABASE_URL must be set");
@@ -42,7 +48,6 @@ impl AppState {
             .build()
             .expect("Failed to create reqwest client");
 
-        let supabase_config = crate::storage::SupabaseConfig::from_env()?;
         let storage = Arc::new(crate::storage::SupabaseStorage::new(supabase_config, http_client.clone()));
 
         Ok(AppState { pool, post_cache, http_client, storage })
@@ -145,6 +150,32 @@ impl AppState {
         let posts = self.get_all_posts().await?;
         self.post_cache.insert(key.to_string(), posts.clone()).await;
         Ok(posts)
+    }
+
+    pub async fn get_posts_smart_cached(&self, limit: i32, offset: i32) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
+        let page = (offset / limit) + 1;
+
+        if page == 1 && limit <= 50 {
+            match self.get_all_posts_cached().await {
+                Ok(posts) => {
+                    // Apply pagination to cached results
+                    let paginated_posts: Vec<crate::posting::models::Post> = posts.into_iter()
+                        .skip(offset as usize)
+                        .take(limit as usize)
+                        .collect();
+                    log::info!("Successfully fetched {} posts from cache with pagination.", paginated_posts.len());
+                    Ok(paginated_posts)
+                }
+                Err(e) => {
+                    log::warn!("Failed to get posts from cache, falling back to database: {}", e);
+                    // Fall back to database if cache fails
+                    self.get_posts_paginated(limit, offset).await
+                }
+            }
+        } else {
+            // For other pages or larger limits, go directly to database
+            self.get_posts_paginated(limit, offset).await
+        }
     }
 
     pub async fn get_posts_paginated(&self, limit: i32, offset: i32) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {

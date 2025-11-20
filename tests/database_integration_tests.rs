@@ -30,84 +30,12 @@ mod database_integration_tests {
                 // Ensure the uuid-ossp extension is available
                 sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";").execute(&pool).await.unwrap();
 
+                // Read schema from the source of truth file
+                let schema_sql = std::fs::read_to_string("../supabase_schema.sql")
+                    .expect("Failed to read supabase_schema.sql file");
+
                 // Run the schema to ensure test tables exist
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS assets (
-                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                        name TEXT NOT NULL,
-                        filename TEXT NOT NULL,
-                        url TEXT NOT NULL,
-                        description TEXT,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    );"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS posts (
-                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                        title TEXT NOT NULL,
-                        category TEXT NOT NULL,
-                        date DATE NOT NULL,
-                        excerpt TEXT NOT NULL,
-                        folder_id TEXT,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    );"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS folders (
-                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                        name TEXT UNIQUE NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    );"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS asset_folders (
-                        asset_id UUID REFERENCES assets(id) ON DELETE CASCADE,
-                        folder_id UUID REFERENCES folders(id) ON DELETE CASCADE,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        PRIMARY KEY (asset_id, folder_id)
-                    );"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE INDEX IF NOT EXISTS idx_assets_filename ON assets(filename);"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE INDEX IF NOT EXISTS idx_asset_folders_asset_id ON asset_folders(asset_id);"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE INDEX IF NOT EXISTS idx_asset_folders_folder_id ON asset_folders(folder_id);"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE OR REPLACE FUNCTION update_updated_at_column()
-                    RETURNS TRIGGER AS $$
-                    BEGIN
-                        NEW.updated_at = NOW();
-                        RETURN NEW;
-                    END;
-                    $$ language 'plpgsql';"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE TRIGGER IF NOT EXISTS update_assets_updated_at
-                        BEFORE UPDATE ON assets
-                        FOR EACH ROW
-                        EXECUTE FUNCTION update_updated_at_column();"
-                ).execute(&pool).await.unwrap();
-
-                sqlx::query(
-                    "CREATE TRIGGER IF NOT EXISTS update_posts_updated_at
-                        BEFORE UPDATE ON posts
-                        FOR EACH ROW
-                        EXECUTE FUNCTION update_updated_at_column();"
-                ).execute(&pool).await.unwrap();
+                sqlx::query(&schema_sql).execute(&pool).await.unwrap();
 
                 pool
             },
@@ -124,7 +52,7 @@ mod database_integration_tests {
     // Helper to clean up test data
     async fn cleanup_test_data(pool: &PgPool) {
         // Truncate all tables that might have been created during tests
-        let _ = sqlx::query!("TRUNCATE TABLE posts, assets, folders, asset_folders RESTART IDENTITY CASCADE")
+        let _ = sqlx::query!("TRUNCATE TABLE posts, assets, folders, asset_folders, posting_assets RESTART IDENTITY CASCADE")
             .execute(pool)
             .await;
     }
