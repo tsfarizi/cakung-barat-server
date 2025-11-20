@@ -35,3 +35,7 @@ tasks:
       - task: tag
       - task: run
     silent: true
+  push:
+    desc: Push the Docker image to Docker Hub
+    cmds:
+      - docker push farizi/cakung-barat-server:latest
