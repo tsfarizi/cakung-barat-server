@@ -1,0 +1,37 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the Docker image
+    cmds:
+      - docker build -t cakung-barat-server:latest .
+
+  tag:
+    desc: Tag the Docker image for Docker Hub
+    cmds:
+      - docker tag cakung-barat-server:latest farizi/cakung-barat-server:latest
+
+  run:
+    desc: Run the Docker container with specified resources
+    cmds:
+      - docker run --memory="128m" --cpus="1" -d -p 8080:8080 cakung-barat-server
+
+  sqlx-prepare:
+    desc: Prepare SQLx queries for deployment
+    cmds:
+      - cargo sqlx prepare
+
+  build-tag:
+    desc: Run all tasks in sequence (build, tag, prepare SQLx)
+    deps:
+      - build
+      - tag
+    silent: true
+
+  deploy:
+    desc: Build, tag, and run the container
+    cmds:
+      - task: build
+      - task: tag
+      - task: run
+    silent: true
