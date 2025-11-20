@@ -1,20 +1,20 @@
 use actix_cors::Cors;
-use actix_web::{App, HttpServer, http::header, web};
 use actix_web::middleware::Compress;
+use actix_web::{http::header, web, App, HttpServer};
+use actix_web_prometheus::PrometheusMetricsBuilder;
 use chrono;
 use dotenvy;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
-use actix_web_prometheus::PrometheusMetricsBuilder;
 
 pub mod asset;
 pub mod db;
+pub mod organization;
 pub mod posting;
 pub mod storage;
-pub mod organization;
 
-use crate::db::AppState;
+pub use crate::db::AppState;
 
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
@@ -50,8 +50,6 @@ pub async fn run() -> std::io::Result<()> {
         std::env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
-
-
 
     #[derive(OpenApi)]
     #[openapi(
@@ -148,7 +146,6 @@ pub async fn run() -> std::io::Result<()> {
             .wrap(prometheus)
             .wrap(cors)
             .app_data(app_state)
-
             .service(
                 web::scope("/api")
                     .configure(organization::routes::config) // Register organization routes
@@ -188,8 +185,7 @@ pub async fn run() -> std::io::Result<()> {
                         web::resource("/assets/{id}")
                             .route(web::get().to(asset::handlers::get_asset_by_id))
                             .route(web::delete().to(asset::handlers::delete_asset)),
-                    )
-
+                    ),
             )
             .service(
                 web::resource("/assets/serve/{filename:.*}")

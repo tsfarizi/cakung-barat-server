@@ -8,8 +8,9 @@ pub async fn setup_test_db() -> PgPool {
     // For now, we'll return a mock pool that won't be used in actual tests
     // In real tests, you would need to set up a real test database
     dotenvy::dotenv().ok(); // Load environment variables if available
-    let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://test_user:test_password@localhost/test_cakung_barat".to_string());
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://test_user:test_password@localhost/test_cakung_barat".to_string()
+    });
 
     // Connect to the database
     let pool = PgPool::connect(&database_url)
@@ -17,7 +18,10 @@ pub async fn setup_test_db() -> PgPool {
         .expect("Failed to connect to test database");
 
     // Ensure the uuid-ossp extension is available
-    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";").execute(&pool).await.unwrap();
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Run the schema to ensure test tables exist
     sqlx::query(
@@ -29,8 +33,11 @@ pub async fn setup_test_db() -> PgPool {
             description TEXT,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );"
-    ).execute(&pool).await.unwrap();
+        );",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS posts (
@@ -42,16 +49,22 @@ pub async fn setup_test_db() -> PgPool {
             folder_id TEXT,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );"
-    ).execute(&pool).await.unwrap();
+        );",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS folders (
             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
             name TEXT UNIQUE NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );"
-    ).execute(&pool).await.unwrap();
+        );",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS asset_folders (
@@ -59,20 +72,30 @@ pub async fn setup_test_db() -> PgPool {
             folder_id UUID REFERENCES folders(id) ON DELETE CASCADE,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             PRIMARY KEY (asset_id, folder_id)
-        );"
-    ).execute(&pool).await.unwrap();
+        );",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_assets_filename ON assets(filename);")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_assets_filename ON assets(filename);"
-    ).execute(&pool).await.unwrap();
+        "CREATE INDEX IF NOT EXISTS idx_asset_folders_asset_id ON asset_folders(asset_id);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_asset_folders_asset_id ON asset_folders(asset_id);"
-    ).execute(&pool).await.unwrap();
-
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_asset_folders_folder_id ON asset_folders(folder_id);"
-    ).execute(&pool).await.unwrap();
+        "CREATE INDEX IF NOT EXISTS idx_asset_folders_folder_id ON asset_folders(folder_id);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -81,22 +104,31 @@ pub async fn setup_test_db() -> PgPool {
             NEW.updated_at = NOW();
             RETURN NEW;
         END;
-        $$ language 'plpgsql';"
-    ).execute(&pool).await.unwrap();
+        $$ language 'plpgsql';",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "CREATE TRIGGER IF NOT EXISTS update_assets_updated_at
             BEFORE UPDATE ON assets
             FOR EACH ROW
-            EXECUTE FUNCTION update_updated_at_column();"
-    ).execute(&pool).await.unwrap();
+            EXECUTE FUNCTION update_updated_at_column();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "CREATE TRIGGER IF NOT EXISTS update_posts_updated_at
             BEFORE UPDATE ON posts
             FOR EACH ROW
-            EXECUTE FUNCTION update_updated_at_column();"
-    ).execute(&pool).await.unwrap();
+            EXECUTE FUNCTION update_updated_at_column();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     pool
 }
@@ -146,13 +178,24 @@ impl cakung_barat_server::storage::ObjectStorage for MockObjectStorage {
         Ok(())
     }
 
-    async fn list_folder_contents(&self, _folder_name: &str) -> Result<Vec<cakung_barat_server::storage::FolderContent>, String> {
+    async fn list_folder_contents(
+        &self,
+        _folder_name: &str,
+    ) -> Result<Vec<cakung_barat_server::storage::FolderContent>, String> {
         // Return empty list for mock implementation
         Ok(Vec::new())
     }
 
     fn get_asset_url(&self, filename: &str) -> String {
         format!("http://test.example.com/{}", filename)
+    }
+
+    async fn download_file(&self, filename: &str) -> Result<Vec<u8>, String> {
+        let files = self.files.lock().await;
+        files
+            .get(filename)
+            .cloned()
+            .ok_or_else(|| "File not found".to_string())
     }
 }
 
@@ -170,7 +213,9 @@ where
 /// Helper to clean up test data
 pub async fn cleanup_test_data(pool: &PgPool) {
     // Truncate all tables that might have been created during tests
-    let _ = sqlx::query!("TRUNCATE TABLE posts, assets, folders, asset_folders RESTART IDENTITY CASCADE")
-        .execute(pool)
-        .await;
+    let _ = sqlx::query!(
+        "TRUNCATE TABLE posts, assets, folders, asset_folders RESTART IDENTITY CASCADE"
+    )
+    .execute(pool)
+    .await;
 }

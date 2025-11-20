@@ -1,14 +1,14 @@
 #[cfg(test)]
 mod database_integration_tests {
-    use cakung_barat_server::db::AppState;
     use cakung_barat_server::asset::models::Asset;
+    use cakung_barat_server::db::AppState;
     use cakung_barat_server::posting::models::{Post, PostWithAssets};
     use cakung_barat_server::storage::ObjectStorage;
-    use std::sync::Arc;
-    use uuid::Uuid;
     use chrono::NaiveDate;
     use sqlx::PgPool;
+    use std::sync::Arc;
     use tokio;
+    use uuid::Uuid;
 
     // Test helper functions moved into this module
     async fn setup_test_db() -> PgPool {
@@ -28,7 +28,10 @@ mod database_integration_tests {
         let pool = match PgPool::connect(&database_url).await {
             Ok(pool) => {
                 // Ensure the uuid-ossp extension is available
-                sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";").execute(&pool).await.unwrap();
+                sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
 
                 // Read schema from the source of truth file
                 let schema_sql = std::fs::read_to_string("../supabase_schema.sql")
@@ -38,7 +41,7 @@ mod database_integration_tests {
                 sqlx::query(&schema_sql).execute(&pool).await.unwrap();
 
                 pool
-            },
+            }
             Err(e) => {
                 // For the purpose of this example, we'll panic to show that real database connection is needed
                 // In a real project, you might want to have a different approach for CI environments
@@ -65,7 +68,9 @@ mod database_integration_tests {
     impl MockObjectStorage {
         fn new() -> Self {
             Self {
-                files: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+                files: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
             }
         }
     }
@@ -89,13 +94,24 @@ mod database_integration_tests {
             Ok(())
         }
 
-        async fn list_folder_contents(&self, _folder_name: &str) -> Result<Vec<cakung_barat_server::storage::FolderContent>, String> {
+        async fn list_folder_contents(
+            &self,
+            _folder_name: &str,
+        ) -> Result<Vec<cakung_barat_server::storage::FolderContent>, String> {
             // Return empty list for mock implementation
             Ok(Vec::new())
         }
 
         fn get_asset_url(&self, filename: &str) -> String {
             format!("http://test.example.com/{}", filename)
+        }
+
+        async fn download_file(&self, filename: &str) -> Result<Vec<u8>, String> {
+            let files = self.files.lock().await;
+            files
+                .get(filename)
+                .cloned()
+                .ok_or_else(|| "File not found".to_string())
         }
     }
 
@@ -104,14 +120,16 @@ mod database_integration_tests {
         // Setup test database
         let pool = setup_test_db().await;
         let mock_storage = Arc::new(MockObjectStorage::new());
-        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage).await.unwrap();
+        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage)
+            .await
+            .unwrap();
 
         // Create a test asset
         let test_asset = Asset::new(
             "Test Asset".to_string(),
             "test_file.jpg".to_string(),
             "/assets/serve/test_file.jpg".to_string(),
-            Some("A test asset description".to_string())
+            Some("A test asset description".to_string()),
         );
 
         // Test CREATE (Insert)
@@ -162,7 +180,9 @@ mod database_integration_tests {
         // Setup test database
         let pool = setup_test_db().await;
         let mock_storage = Arc::new(MockObjectStorage::new());
-        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage).await.unwrap();
+        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage)
+            .await
+            .unwrap();
 
         // Create a test post
         let test_post = Post {
@@ -225,20 +245,22 @@ mod database_integration_tests {
         // Setup test database
         let pool = setup_test_db().await;
         let mock_storage = Arc::new(MockObjectStorage::new());
-        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage).await.unwrap();
+        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage)
+            .await
+            .unwrap();
 
         // Create some test assets to work with folders
         let asset1 = Asset::new(
             "Asset 1".to_string(),
             "asset1.jpg".to_string(),
             "/assets/serve/asset1.jpg".to_string(),
-            None
+            None,
         );
         let asset2 = Asset::new(
             "Asset 2".to_string(),
             "asset2.jpg".to_string(),
             "/assets/serve/asset2.jpg".to_string(),
-            None
+            None,
         );
 
         // Insert assets
@@ -249,7 +271,9 @@ mod database_integration_tests {
         let asset_ids = vec![asset1.id, asset2.id];
 
         // Test folder creation and asset association
-        let insert_result = app_state.insert_folder_contents(folder_name, &asset_ids).await;
+        let insert_result = app_state
+            .insert_folder_contents(folder_name, &asset_ids)
+            .await;
         assert!(insert_result.is_ok());
 
         // Test reading folder contents
@@ -266,20 +290,22 @@ mod database_integration_tests {
         // Setup test database
         let pool = setup_test_db().await;
         let mock_storage = Arc::new(MockObjectStorage::new());
-        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage).await.unwrap();
+        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage)
+            .await
+            .unwrap();
 
         // Create test assets
         let asset1 = Asset::new(
             "Post Asset 1".to_string(),
             "post_asset1.jpg".to_string(),
             "/assets/serve/post_asset1.jpg".to_string(),
-            None
+            None,
         );
         let asset2 = Asset::new(
             "Post Asset 2".to_string(),
             "post_asset2.jpg".to_string(),
             "/assets/serve/post_asset2.jpg".to_string(),
-            None
+            None,
         );
 
         app_state.insert_asset(&asset1).await.unwrap();
@@ -313,11 +339,16 @@ mod database_integration_tests {
         };
 
         // Test upsert with assets
-        let upsert_result = app_state.upsert_posting_with_assets(&post_with_assets).await;
+        let upsert_result = app_state
+            .upsert_posting_with_assets(&post_with_assets)
+            .await;
         assert!(upsert_result.is_ok());
 
         // Test get post with assets
-        let retrieved_post_with_assets = app_state.get_posting_by_id_with_assets(&test_post.id).await.unwrap();
+        let retrieved_post_with_assets = app_state
+            .get_posting_by_id_with_assets(&test_post.id)
+            .await
+            .unwrap();
         assert!(retrieved_post_with_assets.is_some());
         let retrieved = retrieved_post_with_assets.unwrap();
         assert_eq!(retrieved.title, "Test Post With Assets");
@@ -332,7 +363,9 @@ mod database_integration_tests {
         // Setup test database
         let pool = setup_test_db().await;
         let mock_storage = Arc::new(MockObjectStorage::new());
-        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage).await.unwrap();
+        let app_state = AppState::new_with_pool_and_storage(pool.clone(), mock_storage)
+            .await
+            .unwrap();
 
         // Test multiple CRUD operations in one test
         // Create multiple assets
@@ -340,13 +373,13 @@ mod database_integration_tests {
             "Batch Test Asset 1".to_string(),
             "batch_asset1.jpg".to_string(),
             "/assets/serve/batch_asset1.jpg".to_string(),
-            Some("First batch asset".to_string())
+            Some("First batch asset".to_string()),
         );
         let asset2 = Asset::new(
             "Batch Test Asset 2".to_string(),
             "batch_asset2.jpg".to_string(),
             "/assets/serve/batch_asset2.jpg".to_string(),
-            Some("Second batch asset".to_string())
+            Some("Second batch asset".to_string()),
         );
 
         // Insert assets
