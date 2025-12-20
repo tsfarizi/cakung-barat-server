@@ -48,20 +48,26 @@ async fn write_organization_data(
     state: &web::Data<AppState>,
     members: &Vec<OrganizationMember>,
 ) -> Result<(), String> {
-    let json_data = serde_json::to_vec(members)
-        .map_err(|e| format!("Failed to serialize organization data: {}", e))?;
-
-    state
-        .storage
-        .upload_file(ORGANIZATION_FILE, &json_data)
-        .await?;
-
-    // Invalidate cache
+    // Write-through: Update cache immediately for fast reads
     state
         .organization_cache
-        .invalidate(ORGANIZATION_CACHE_KEY)
+        .insert(ORGANIZATION_CACHE_KEY.to_string(), members.clone())
         .await;
-    log::info!("Organization cache invalidated");
+    log::info!("Organization cache updated with {} members", members.len());
+
+    // Send to background worker for async persistence to storage
+    // This makes the response fast while ensuring eventual consistency
+    if let Err(e) = state
+        .organization_persist_sender
+        .send(members.clone())
+        .await
+    {
+        log::error!("Failed to queue organization data for persistence: {}", e);
+        // Note: We still return Ok since cache is up-to-date
+        // Data will be available from cache until next restart
+    } else {
+        log::debug!("Organization data queued for background persistence");
+    }
 
     Ok(())
 }
