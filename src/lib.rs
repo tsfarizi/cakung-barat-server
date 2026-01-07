@@ -9,6 +9,7 @@ use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 pub mod asset;
+pub mod auth;
 pub mod db;
 pub mod organization;
 pub mod posting;
@@ -90,12 +91,19 @@ pub async fn run() -> std::io::Result<()> {
                 organization::model::OrganizationMember,
                 organization::model::CreateMemberRequest,
                 organization::model::UpdateMemberRequest,
+                auth::model::AdminInfo,
+                auth::model::LoginRequest,
+                auth::model::TokenResponse,
+                auth::model::RefreshRequest,
+                auth::model::CreateAdminRequest,
+                auth::model::AuthStatusResponse,
             )
         ),
         tags(
             (name = "Posting Service", description = "Posting CRUD endpoints."),
             (name = "Asset Service", description = "Asset and Folder endpoints."),
-            (name = "Organization", description = "Organization Structure endpoints.")
+            (name = "Organization", description = "Organization Structure endpoints."),
+            (name = "Authentication", description = "Admin authentication endpoints.")
         ),
         servers(
             (url = "https://cakung-barat-server-1065513777845.asia-southeast2.run.app", description = "Production server"),
@@ -148,7 +156,8 @@ pub async fn run() -> std::io::Result<()> {
             .app_data(app_state)
             .service(
                 web::scope("/api")
-                    .configure(organization::routes::config) // Register organization routes
+                    .configure(organization::routes::config)
+                    .configure(auth::handlers::config) // Register auth routes
                     .service(
                         web::resource("/postings")
                             .route(web::get().to(posting::handlers::get_all_postings))
