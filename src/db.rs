@@ -584,10 +584,10 @@ impl AppState {
 
     /// Get count of admins in database
     pub async fn get_admin_count(&self) -> Result<i64, sqlx::Error> {
-        let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM admins")
+        let result = sqlx::query_scalar!("SELECT COUNT(*) FROM admins")
             .fetch_one(&self.pool)
             .await?;
-        Ok(result.0)
+        Ok(result.unwrap_or(0))
     }
 
     /// Get admin by username
@@ -595,10 +595,11 @@ impl AppState {
         &self,
         username: &str,
     ) -> Result<Option<crate::auth::model::Admin>, sqlx::Error> {
-        sqlx::query_as::<_, crate::auth::model::Admin>(
-            "SELECT id, username, password_hash, display_name, refresh_token, created_at, updated_at, created_by FROM admins WHERE username = $1"
+        sqlx::query_as!(
+            crate::auth::model::Admin,
+            "SELECT id, username, password_hash, display_name, refresh_token, created_at, updated_at, created_by FROM admins WHERE username = $1",
+            username
         )
-        .bind(username)
         .fetch_optional(&self.pool)
         .await
     }
@@ -608,10 +609,11 @@ impl AppState {
         &self,
         refresh_token: &str,
     ) -> Result<Option<crate::auth::model::Admin>, sqlx::Error> {
-        sqlx::query_as::<_, crate::auth::model::Admin>(
-            "SELECT id, username, password_hash, display_name, refresh_token, created_at, updated_at, created_by FROM admins WHERE refresh_token = $1"
+        sqlx::query_as!(
+            crate::auth::model::Admin,
+            "SELECT id, username, password_hash, display_name, refresh_token, created_at, updated_at, created_by FROM admins WHERE refresh_token = $1",
+            refresh_token
         )
-        .bind(refresh_token)
         .fetch_optional(&self.pool)
         .await
     }
@@ -624,17 +626,18 @@ impl AppState {
         display_name: Option<&str>,
         created_by: Option<Uuid>,
     ) -> Result<crate::auth::model::Admin, sqlx::Error> {
-        sqlx::query_as::<_, crate::auth::model::Admin>(
+        sqlx::query_as!(
+            crate::auth::model::Admin,
             r#"
             INSERT INTO admins (username, password_hash, display_name, created_by)
             VALUES ($1, $2, $3, $4)
             RETURNING id, username, password_hash, display_name, refresh_token, created_at, updated_at, created_by
-            "#
+            "#,
+            username,
+            password_hash,
+            display_name,
+            created_by
         )
-        .bind(username)
-        .bind(password_hash)
-        .bind(display_name)
-        .bind(created_by)
         .fetch_one(&self.pool)
         .await
     }
@@ -645,17 +648,20 @@ impl AppState {
         admin_id: &Uuid,
         refresh_token: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE admins SET refresh_token = $1, updated_at = NOW() WHERE id = $2")
-            .bind(refresh_token)
-            .bind(admin_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query!(
+            "UPDATE admins SET refresh_token = $1, updated_at = NOW() WHERE id = $2",
+            refresh_token,
+            admin_id
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     /// Get all admins
     pub async fn get_all_admins(&self) -> Result<Vec<crate::auth::model::Admin>, sqlx::Error> {
-        sqlx::query_as::<_, crate::auth::model::Admin>(
+        sqlx::query_as!(
+            crate::auth::model::Admin,
             "SELECT id, username, password_hash, display_name, refresh_token, created_at, updated_at, created_by FROM admins ORDER BY created_at"
         )
         .fetch_all(&self.pool)
@@ -664,8 +670,7 @@ impl AppState {
 
     /// Delete admin by id
     pub async fn delete_admin(&self, admin_id: &Uuid) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM admins WHERE id = $1")
-            .bind(admin_id)
+        let result = sqlx::query!("DELETE FROM admins WHERE id = $1", admin_id)
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
