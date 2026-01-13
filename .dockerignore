@@ -1,0 +1,28 @@
+# Build artifacts
+target/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (copy explicitly in Dockerfile if needed)
+# .env is copied explicitly
+
+# Tests
+tests/
+
+# Documentation
+*.md
+!README.md
+
+# Other
+.gemini/
+.qwen/
+.sqlx/
+Taskfile.yml
