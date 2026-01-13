@@ -11,6 +11,7 @@ use utoipa_swagger_ui::SwaggerUi;
 pub mod asset;
 pub mod auth;
 pub mod db;
+pub mod mcp;
 pub mod organization;
 pub mod posting;
 pub mod storage;
@@ -123,6 +124,17 @@ pub async fn run() -> std::io::Result<()> {
         }
     };
 
+    // Initialize MCP service
+    let mcp_registry = match mcp::tools::ToolRegistry::new() {
+        Ok(registry) => registry,
+        Err(e) => {
+            log::error!("Failed to initialize MCP tool registry: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let mcp_service = mcp::McpService::new(mcp_registry);
+    let mcp_state = web::Data::new(std::sync::Arc::new(mcp::McpState::new(mcp_service)));
+
     let prometheus = PrometheusMetricsBuilder::new("cakung_barat_server")
         .endpoint("/metrics")
         .build()
@@ -149,11 +161,14 @@ pub async fn run() -> std::io::Result<()> {
             .supports_credentials()
             .max_age(3600);
 
+        let mcp_state = mcp_state.clone();
         App::new()
             .wrap(Compress::default())
             .wrap(prometheus)
             .wrap(cors)
             .app_data(app_state)
+            .app_data(mcp_state)
+            .configure(mcp::config)
             .service(
                 web::scope("/api")
                     .configure(organization::routes::config)

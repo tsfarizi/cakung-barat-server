@@ -640,6 +640,7 @@ dependencies = [
  "actix-web-prometheus",
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "bcrypt",
  "chrono",
  "dotenvy",
@@ -654,6 +655,7 @@ dependencies = [
  "parking_lot",
  "postgrest",
  "prometheus 0.14.0",
+ "regex",
  "reqwest 0.12.24",
  "sanitize-filename",
  "serde",
@@ -663,6 +665,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "utoipa",
  "utoipa-swagger-ui",
@@ -3846,6 +3849,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

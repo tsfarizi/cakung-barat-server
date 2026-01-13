@@ -38,6 +38,9 @@ thiserror = "1.0"
 async-trait = "0.1"
 jsonwebtoken = "9"
 bcrypt = "0.17"
+base64 = "0.22"
+regex = "1.10"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [lib]
 name = "cakung_barat_server"
