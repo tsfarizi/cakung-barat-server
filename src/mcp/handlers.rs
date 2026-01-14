@@ -1,56 +1,27 @@
-//! MCP HTTP/SSE Handlers for Actix-Web.
+//! MCP Stateless HTTP Handlers for Actix-Web.
+//!
+//! This implementation uses stateless HTTP POST for Cloud Run / serverless compatibility.
+//! No SSE connections are maintained - each request is independent.
 
-use actix_web::{web, HttpRequest, HttpResponse, Responder};
-use futures::stream::StreamExt;
+use actix_web::{web, HttpResponse, Responder};
 use std::sync::Arc;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 
 use crate::mcp::rpc::RpcRequest;
 use crate::mcp::service::McpService;
 
-/// MCP State for Actix-Web
+/// MCP State for Actix-Web (stateless version)
 pub struct McpState {
     pub service: McpService,
-    pub tx: broadcast::Sender<String>,
 }
 
 impl McpState {
     pub fn new(service: McpService) -> Self {
-        let (tx, _rx) = broadcast::channel(100);
-        Self { service, tx }
+        Self { service }
     }
 }
 
-/// SSE handler - GET /sse
-/// Establishes SSE connection and sends initial endpoint event
-pub async fn sse_handler(state: web::Data<Arc<McpState>>, _req: HttpRequest) -> impl Responder {
-    log::info!("Client connected to SSE stream");
-
-    let rx = state.tx.subscribe();
-    let stream = BroadcastStream::new(rx);
-
-    // Create SSE stream with initial endpoint event
-    let initial_event = format!("event: endpoint\ndata: /sse\n\n");
-
-    let event_stream =
-        futures::stream::once(
-            async move { Ok::<_, std::io::Error>(web::Bytes::from(initial_event)) },
-        )
-        .chain(stream.map(|msg| match msg {
-            Ok(data) => Ok(web::Bytes::from(format!("data: {}\n\n", data))),
-            Err(_) => Ok(web::Bytes::from("event: error\ndata: stream error\n\n")),
-        }));
-
-    HttpResponse::Ok()
-        .content_type("text/event-stream")
-        .insert_header(("Cache-Control", "no-cache"))
-        .insert_header(("Connection", "keep-alive"))
-        .streaming(event_stream)
-}
-
-/// RPC handler - POST /sse
-/// Handles JSON-RPC requests
+/// RPC handler - POST /mcp
+/// Handles JSON-RPC requests in stateless mode
 pub async fn rpc_handler(
     state: web::Data<Arc<McpState>>,
     body: web::Json<RpcRequest>,
@@ -67,11 +38,10 @@ pub async fn rpc_handler(
     HttpResponse::Accepted().finish()
 }
 
-/// Configure MCP routes
+/// Configure MCP routes (stateless)
 pub fn config(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::resource("/sse")
-            .route(web::get().to(sse_handler))
-            .route(web::post().to(rpc_handler)),
-    );
+    cfg.service(web::resource("/mcp").route(web::post().to(rpc_handler)));
+
+    // Keep /sse route for backward compatibility (same as /mcp)
+    cfg.service(web::resource("/sse").route(web::post().to(rpc_handler)));
 }
