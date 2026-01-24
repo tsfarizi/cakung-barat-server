@@ -133,7 +133,11 @@ pub async fn run() -> std::io::Result<()> {
         }
     };
     let mcp_service = mcp::McpService::new(mcp_registry);
-    let mcp_state = web::Data::new(std::sync::Arc::new(mcp::McpState::new(mcp_service)));
+    // Pass app_state to McpState for database access in async tools
+    let mcp_state = web::Data::new(std::sync::Arc::new(mcp::McpState::new(
+        mcp_service,
+        app_state.clone(),
+    )));
 
     let prometheus = PrometheusMetricsBuilder::new("cakung_barat_server")
         .endpoint("/metrics")

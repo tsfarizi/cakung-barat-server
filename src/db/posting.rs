@@ -36,6 +36,79 @@ impl AppState {
         Ok(posts)
     }
 
+    /// Get posts with optional category filter, sorting, and pagination.
+    /// Uses cache-first strategy - same cache as REST endpoints.
+    pub async fn get_posts_filtered(
+        &self,
+        category: Option<&str>,
+        sort_latest_first: bool,
+        limit: i32,
+        offset: i32,
+    ) -> Result<Vec<crate::posting::models::Post>, sqlx::Error> {
+        // Reuse cache - same as REST endpoint
+        let all_posts = self.get_all_posts_cached().await?;
+
+        // Apply category filter
+        let filtered: Vec<_> = all_posts
+            .into_iter()
+            .filter(|p| category.map_or(true, |c| p.category.eq_ignore_ascii_case(c)))
+            .collect();
+
+        // Apply sorting
+        let mut sorted = filtered;
+        if sort_latest_first {
+            sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        } else {
+            sorted.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        }
+
+        // Apply pagination
+        let paginated: Vec<_> = sorted
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+
+        log::info!(
+            "Filtered posts: category={:?}, sort_latest={}, limit={}, offset={}, result_count={}",
+            category,
+            sort_latest_first,
+            limit,
+            offset,
+            paginated.len()
+        );
+
+        Ok(paginated)
+    }
+
+    /// Get distinct categories from all posts.
+    /// Uses cache-first strategy - same cache as REST endpoints.
+    pub async fn get_distinct_categories(&self) -> Result<Vec<String>, sqlx::Error> {
+        let all_posts = self.get_all_posts_cached().await?;
+
+        let mut categories: Vec<String> = all_posts.iter().map(|p| p.category.clone()).collect();
+
+        // Remove duplicates and sort
+        categories.sort();
+        categories.dedup();
+
+        log::info!("Found {} distinct categories", categories.len());
+        Ok(categories)
+    }
+
+    /// Count posts with optional category filter.
+    /// Uses cache-first strategy.
+    pub async fn count_posts_filtered(&self, category: Option<&str>) -> Result<usize, sqlx::Error> {
+        let all_posts = self.get_all_posts_cached().await?;
+
+        let count = all_posts
+            .iter()
+            .filter(|p| category.map_or(true, |c| p.category.eq_ignore_ascii_case(c)))
+            .count();
+
+        Ok(count)
+    }
+
     pub async fn get_posts_smart_cached(
         &self,
         limit: i32,

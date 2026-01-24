@@ -6,17 +6,20 @@
 use actix_web::{web, HttpResponse, Responder};
 use std::sync::Arc;
 
+use crate::db::AppState;
 use crate::mcp::rpc::RpcRequest;
 use crate::mcp::service::McpService;
 
 /// MCP State for Actix-Web (stateless version)
+/// Includes AppState for database access in async tools.
 pub struct McpState {
     pub service: McpService,
+    pub app_state: web::Data<AppState>,
 }
 
 impl McpState {
-    pub fn new(service: McpService) -> Self {
-        Self { service }
+    pub fn new(service: McpService, app_state: web::Data<AppState>) -> Self {
+        Self { service, app_state }
     }
 }
 
@@ -28,7 +31,12 @@ pub async fn rpc_handler(
 ) -> impl Responder {
     log::info!("Received MCP request: {}", body.method);
 
-    if let Some(response) = state.service.handle_request(body.into_inner()) {
+    // Pass AppState to service for async tool calls
+    if let Some(response) = state
+        .service
+        .handle_request(body.into_inner(), &state.app_state)
+        .await
+    {
         return HttpResponse::Ok()
             .content_type("application/json")
             .json(response);

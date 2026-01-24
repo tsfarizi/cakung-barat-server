@@ -5,6 +5,7 @@
 //! - Argument parsing and validation
 //! - Execution and result formatting
 
+pub mod browse_posts;
 pub mod registry;
 mod surat_kpr;
 mod surat_nib_npwp;

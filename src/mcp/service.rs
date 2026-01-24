@@ -1,7 +1,9 @@
 //! MCP Service - Core JSON-RPC 2.0 request handler.
 
+use crate::db::AppState;
 use crate::mcp::rpc::{OutboundResponse, RpcRequest};
 use crate::mcp::tools::ToolRegistry;
+use actix_web::web;
 use log::{info, warn};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -23,7 +25,13 @@ impl McpService {
         }
     }
 
-    pub fn handle_request(&self, request: RpcRequest) -> Option<OutboundResponse> {
+    /// Handle incoming JSON-RPC request.
+    /// AppState is passed for async tools that need database access.
+    pub async fn handle_request(
+        &self,
+        request: RpcRequest,
+        app_state: &web::Data<AppState>,
+    ) -> Option<OutboundResponse> {
         if request.jsonrpc != "2.0" {
             warn!("received unsupported jsonrpc version: {}", request.jsonrpc);
             return Some(OutboundResponse::error(
@@ -40,7 +48,7 @@ impl McpService {
         match method.as_str() {
             "initialize" => Some(self.handle_initialize(id, params)),
             "tools/list" => Some(self.handle_list_tools(id)),
-            "tools/call" => Some(self.handle_call_tool(id, params)),
+            "tools/call" => Some(self.handle_call_tool(id, params, app_state).await),
             "resources/list" => Some(self.handle_resources_list(id)),
             "resources/read" => Some(self.handle_resources_read(id, params)),
             "resources/templates/list" => Some(self.handle_resource_templates_list(id)),
@@ -98,13 +106,23 @@ impl McpService {
         OutboundResponse::success(id, serde_json::to_value(payload).unwrap())
     }
 
-    fn handle_call_tool(&self, id: Option<Value>, params: Option<Value>) -> OutboundResponse {
+    /// Handle tool/call - supports both sync and async tools.
+    async fn handle_call_tool(
+        &self,
+        id: Option<Value>,
+        params: Option<Value>,
+        app_state: &web::Data<AppState>,
+    ) -> OutboundResponse {
         let parsed: CallToolParams = match parse_params(params) {
             Ok(value) => value,
             Err(message) => return OutboundResponse::invalid_params(id, message),
         };
 
-        let result = self.registry.call_tool(&parsed.name, parsed.arguments);
+        // Try async tool call first (for database tools), fall back to sync
+        let result = self
+            .registry
+            .call_tool_async(&parsed.name, parsed.arguments, app_state)
+            .await;
         OutboundResponse::success(id, serde_json::to_value(result).unwrap())
     }
 
