@@ -6,6 +6,7 @@
 //! - Execution and result formatting
 
 pub mod browse_posts;
+pub mod organization;
 pub mod registry;
 mod surat_kpr;
 mod surat_nib_npwp;

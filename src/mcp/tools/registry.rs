@@ -17,6 +17,7 @@ use super::browse_posts::{
     self, GetPostingDetailRequest, ListCategoriesResponse, ListPostingsRequest,
     ListPostingsResponse, PostDetailResponse, PostListItem,
 };
+use super::organization;
 use super::surat_kpr;
 use super::surat_nib_npwp;
 use super::surat_tidak_mampu;
@@ -58,6 +59,8 @@ impl ToolRegistry {
             browse_posts::list_postings_descriptor(),
             browse_posts::get_posting_detail_descriptor(),
             browse_posts::list_categories_descriptor(),
+            // Organization tools
+            organization::get_organization_structure_descriptor(),
         ]
     }
 
@@ -81,9 +84,12 @@ impl ToolRegistry {
                 self.call_get_posting_detail(arguments, app_state).await
             }
             browse_posts::LIST_CATEGORIES_TOOL => self.call_list_categories(app_state).await,
+            organization::GET_ORGANIZATION_STRUCTURE_TOOL => {
+                self.call_get_organization_structure(app_state).await
+            }
 
             _ => ToolResult::error(format!(
-                "Tool '{}' tidak tersedia. Tools yang tersedia: {}, {}, {}, {}, {}, {}",
+                "Tool '{}' tidak tersedia. Tools yang tersedia: {}, {}, {}, {}, {}, {}, {}",
                 name,
                 surat_tidak_mampu::TOOL_NAME,
                 surat_kpr::TOOL_NAME,
@@ -91,6 +97,7 @@ impl ToolRegistry {
                 browse_posts::LIST_POSTINGS_TOOL,
                 browse_posts::GET_POSTING_DETAIL_TOOL,
                 browse_posts::LIST_CATEGORIES_TOOL,
+                organization::GET_ORGANIZATION_STRUCTURE_TOOL,
             )),
         }
     }
@@ -223,8 +230,33 @@ impl ToolRegistry {
             }
         };
 
+        // Enrich posts with image URLs
+        let mut posts_with_images = Vec::new();
+        for post in posts {
+            let mut image_url = None;
+            if let Some(folder_name) = &post.folder_id {
+                // Try to get assets for the post's folder
+                if let Ok(Some(asset_ids)) = app_state.get_folder_contents(folder_name).await {
+                    if let Some(first_id) = asset_ids.first() {
+                        if let Ok(Some(asset)) = app_state.get_asset_by_id(first_id).await {
+                            image_url = Some(asset.url);
+                        }
+                    }
+                }
+            }
+
+            posts_with_images.push(PostListItem {
+                id: post.id.to_string(),
+                title: post.title,
+                category: post.category,
+                date: post.date.to_string(),
+                excerpt: post.excerpt,
+                image_url,
+            });
+        }
+
         let response = ListPostingsResponse {
-            posts: posts.into_iter().map(PostListItem::from).collect(),
+            posts: posts_with_images,
             total,
             limit: request.limit,
             offset: request.offset,
@@ -252,8 +284,8 @@ impl ToolRegistry {
             Err(err) => return ToolResult::error(err),
         };
 
-        // Get post by ID
-        let post = match app_state.get_post_by_id(&uuid).await {
+        // Get post by ID with assets
+        let post_with_assets = match app_state.get_posting_by_id_with_assets(&uuid).await {
             Ok(Some(post)) => post,
             Ok(None) => {
                 return ToolResult::error(format!("Postingan dengan ID '{}' tidak ditemukan", uuid))
@@ -263,7 +295,28 @@ impl ToolRegistry {
             }
         };
 
-        let response = PostDetailResponse::from(post);
+        // Fetch actual asset URLs
+        let mut image_urls = Vec::new();
+        if !post_with_assets.asset_ids.is_empty() {
+            if let Ok(assets) = app_state
+                .get_assets_by_ids(&post_with_assets.asset_ids)
+                .await
+            {
+                image_urls = assets.into_iter().map(|a| a.url).collect();
+            }
+        }
+
+        let response = PostDetailResponse {
+            id: post_with_assets.id.to_string(),
+            title: post_with_assets.title,
+            category: post_with_assets.category,
+            date: post_with_assets.date.to_string(),
+            excerpt: post_with_assets.excerpt,
+            created_at: post_with_assets.created_at.map(|dt| dt.to_rfc3339()),
+            updated_at: post_with_assets.updated_at.map(|dt| dt.to_rfc3339()),
+            image_urls,
+        };
+
         let json_text =
             serde_json::to_string_pretty(&response).unwrap_or_else(|_| "{}".to_string());
 
@@ -285,6 +338,20 @@ impl ToolRegistry {
 
         let json_text =
             serde_json::to_string_pretty(&response).unwrap_or_else(|_| "{}".to_string());
+
+        ToolResult::success(vec![ContentItem::text(json_text)])
+    }
+
+    async fn call_get_organization_structure(&self, app_state: &web::Data<AppState>) -> ToolResult {
+        let members = match app_state.get_organization_structure().await {
+            Ok(m) => m,
+            Err(err) => {
+                return ToolResult::error(format!("Gagal mengambil struktur organisasi: {}", err))
+            }
+        };
+
+        let json_text =
+            serde_json::to_string_pretty(&members).unwrap_or_else(|_| "{}".to_string());
 
         ToolResult::success(vec![ContentItem::text(json_text)])
     }
@@ -315,10 +382,10 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_list_tools_returns_six_tools() {
+    fn test_list_tools_returns_seven_tools() {
         let registry = ToolRegistry::new().unwrap();
         let tools = registry.list_tools();
-        assert_eq!(tools.len(), 6, "Should return exactly 6 tools");
+        assert_eq!(tools.len(), 7, "Should return exactly 7 tools");
     }
 
     #[test]
@@ -335,6 +402,8 @@ mod tests {
         assert!(names.contains(&"list_postings"));
         assert!(names.contains(&"get_posting_detail"));
         assert!(names.contains(&"list_categories"));
+        // Organization tool
+        assert!(names.contains(&"get_organization_structure"));
     }
 
     #[test]

@@ -1,48 +1,8 @@
 use crate::organization::model::{CreateMemberRequest, OrganizationMember, UpdateMemberRequest};
+use crate::organization::persistence::ORGANIZATION_CACHE_KEY;
 use crate::AppState;
 use actix_web::{web, HttpResponse, Responder};
 use log;
-
-const ORGANIZATION_FILE: &str = "organization.json";
-const ORGANIZATION_CACHE_KEY: &str = "org_members";
-
-async fn read_organization_data_from_storage(
-    state: &web::Data<AppState>,
-) -> Result<Vec<OrganizationMember>, String> {
-    match state.storage.download_file(ORGANIZATION_FILE).await {
-        Ok(bytes) => {
-            let members: Vec<OrganizationMember> = serde_json::from_slice(&bytes)
-                .map_err(|e| format!("Failed to parse organization data: {}", e))?;
-            Ok(members)
-        }
-        Err(e) => {
-            // If file doesn't exist, return empty list
-            log::warn!(
-                "Failed to download organization data: {}. Assuming empty.",
-                e
-            );
-            Ok(Vec::new())
-        }
-    }
-}
-
-async fn read_organization_data(
-    state: &web::Data<AppState>,
-) -> Result<Vec<OrganizationMember>, String> {
-    // Try cache first
-    if let Some(members) = state.organization_cache.get(ORGANIZATION_CACHE_KEY).await {
-        log::info!("Cache hit for organization members");
-        return Ok(members);
-    }
-
-    log::info!("Cache miss for organization members");
-    let members = read_organization_data_from_storage(state).await?;
-    state
-        .organization_cache
-        .insert(ORGANIZATION_CACHE_KEY.to_string(), members.clone())
-        .await;
-    Ok(members)
-}
 
 async fn write_organization_data(
     state: &web::Data<AppState>,
@@ -81,7 +41,7 @@ async fn write_organization_data(
     )
 )]
 pub async fn get_all_members(state: web::Data<AppState>) -> impl Responder {
-    match read_organization_data(&state).await {
+    match state.get_organization_structure().await {
         Ok(members) => HttpResponse::Ok().json(members),
         Err(e) => HttpResponse::InternalServerError().body(e),
     }
@@ -100,7 +60,7 @@ pub async fn create_member(
     state: web::Data<AppState>,
     item: web::Json<CreateMemberRequest>,
 ) -> impl Responder {
-    let mut members = match read_organization_data(&state).await {
+    let mut members = match state.get_organization_structure().await {
         Ok(m) => m,
         Err(e) => return HttpResponse::InternalServerError().body(e),
     };
@@ -143,7 +103,7 @@ pub async fn update_member(
     item: web::Json<UpdateMemberRequest>,
 ) -> impl Responder {
     let id = path.into_inner();
-    let mut members = match read_organization_data(&state).await {
+    let mut members = match state.get_organization_structure().await {
         Ok(m) => m,
         Err(e) => return HttpResponse::InternalServerError().body(e),
     };
@@ -167,12 +127,6 @@ pub async fn update_member(
         if let Some(role) = &item.role {
             member.role = role.clone();
         }
-
-        // Drop mutable borrow to allow write
-        // Actually we can just clone the member above and use it for response,
-        // but we need to write the whole list.
-        // Rust borrow checker might complain if we hold reference.
-        // Let's finish modification then write.
     } else {
         return HttpResponse::NotFound().body("Member not found");
     }
@@ -201,7 +155,7 @@ pub async fn update_member(
 )]
 pub async fn delete_member(state: web::Data<AppState>, path: web::Path<i32>) -> impl Responder {
     let id = path.into_inner();
-    let mut members = match read_organization_data(&state).await {
+    let mut members = match state.get_organization_structure().await {
         Ok(m) => m,
         Err(e) => return HttpResponse::InternalServerError().body(e),
     };

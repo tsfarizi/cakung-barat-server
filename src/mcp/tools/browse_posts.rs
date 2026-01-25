@@ -27,11 +27,12 @@ pub fn list_postings_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: LIST_POSTINGS_TOOL.to_string(),
         description: concat!(
-            "Melihat daftar postingan/berita di website Kelurahan Cakung Barat. ",
-            "Bisa difilter berdasarkan kategori dan diurutkan berdasarkan tanggal. ",
+            "Melihat daftar postingan, berita, dan informasi terbaru di Kelurahan Cakung Barat. ",
+            "Gunakan tool ini untuk mendapatkan update terkini mengenai kegiatan dan pengumuman kelurahan. ",
+            "Hasil bisa difilter berdasarkan kategori dan diurutkan berdasarkan tanggal. ",
             "Gunakan tool ini untuk: ",
             "(1) Melihat berita terbaru, ",
-            "(2) Mencari posting berdasarkan kategori tertentu, ",
+            "(2) Mencari informasi berdasarkan kategori tertentu, ",
             "(3) Melihat daftar posting dengan pagination."
         )
         .to_string(),
@@ -64,8 +65,9 @@ pub fn get_posting_detail_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: GET_POSTING_DETAIL_TOOL.to_string(),
         description: concat!(
-            "Melihat detail lengkap satu postingan berdasarkan ID. ",
-            "Gunakan tool ini setelah menemukan ID posting dari list_postings."
+            "Melihat detail lengkap satu postingan atau berita berdasarkan ID. ",
+            "Gunakan tool ini untuk membaca isi lengkap informasi terbaru Kelurahan Cakung Barat ",
+            "setelah menemukan ID posting dari list_postings."
         )
         .to_string(),
         input_schema: json!({
@@ -166,18 +168,7 @@ pub struct PostListItem {
     pub category: String,
     pub date: String,
     pub excerpt: String,
-}
-
-impl From<crate::posting::models::Post> for PostListItem {
-    fn from(post: crate::posting::models::Post) -> Self {
-        Self {
-            id: post.id.to_string(),
-            title: post.title,
-            category: post.category,
-            date: post.date.to_string(),
-            excerpt: post.excerpt,
-        }
-    }
+    pub image_url: Option<String>,
 }
 
 /// Response for list_postings tool
@@ -200,20 +191,7 @@ pub struct PostDetailResponse {
     pub excerpt: String,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
-}
-
-impl From<crate::posting::models::Post> for PostDetailResponse {
-    fn from(post: crate::posting::models::Post) -> Self {
-        Self {
-            id: post.id.to_string(),
-            title: post.title,
-            category: post.category,
-            date: post.date.to_string(),
-            excerpt: post.excerpt,
-            created_at: post.created_at.map(|dt| dt.to_rfc3339()),
-            updated_at: post.updated_at.map(|dt| dt.to_rfc3339()),
-        }
-    }
+    pub image_urls: Vec<String>,
 }
 
 /// Response for list_categories tool

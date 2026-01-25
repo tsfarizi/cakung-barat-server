@@ -5,11 +5,48 @@
 
 use crate::organization::model::OrganizationMember;
 use crate::storage::ObjectStorage;
+use crate::AppState;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 const ORGANIZATION_FILE: &str = "organization.json";
+pub const ORGANIZATION_CACHE_KEY: &str = "org_members";
 const DEBOUNCE_MS: u64 = 500;
+
+impl AppState {
+    /// Fetch organization structure with caching strategy.
+    /// This ensures we don't double-fetch from storage if data is already in memory.
+    pub async fn get_organization_structure(&self) -> Result<Vec<OrganizationMember>, String> {
+        // Try cache first
+        if let Some(members) = self.organization_cache.get(ORGANIZATION_CACHE_KEY).await {
+            log::info!("Cache hit for organization members (via AppState)");
+            return Ok(members);
+        }
+
+        log::info!("Cache miss for organization members (via AppState)");
+
+        // Fetch from storage
+        match self.storage.download_file(ORGANIZATION_FILE).await {
+            Ok(bytes) => {
+                let members: Vec<OrganizationMember> = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("Failed to parse organization data: {}", e))?;
+
+                self.organization_cache
+                    .insert(ORGANIZATION_CACHE_KEY.to_string(), members.clone())
+                    .await;
+                Ok(members)
+            }
+            Err(e) => {
+                // If file doesn't exist, return empty list
+                log::warn!(
+                    "Failed to download organization data: {}. Assuming empty.",
+                    e
+                );
+                Ok(Vec::new())
+            }
+        }
+    }
+}
 
 /// Starts the background persistence worker.
 ///
