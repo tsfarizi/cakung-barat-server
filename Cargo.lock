@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "cakung-barat-server"
-version = "0.6.2"
+version = "0.7.2"
 dependencies = [
  "actix-cors",
  "actix-files",

@@ -5,12 +5,10 @@
 
 use serde::Deserialize;
 use std::fs;
-use tempfile::tempdir;
 
-use super::common::{
-    compile_typst_to_pdf, escape_typst_string, format_indonesian_date, get_static_dir,
-    sanitize_filename,
-};
+use super::common::{escape_typst_string, format_indonesian_date, get_static_dir};
+use super::engine::TypstRenderEngine;
+use super::traits::{Generator, Validator};
 use super::{GeneratedDocument, GeneratorError};
 
 const TEMPLATE_FILE: &str = "kpr_belum_memiliki_rumah.typ";
@@ -46,9 +44,9 @@ pub struct SuratKprRequest {
     pub meta: SuratKprMeta,
 }
 
-impl SuratKprRequest {
+impl Validator for SuratKprRequest {
     /// Validate all input data and return descriptive errors if invalid.
-    pub fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         use super::validation::*;
 
         let mut errors = ValidationErrors::new();
@@ -86,6 +84,14 @@ impl SuratKprRequest {
     }
 }
 
+// Keep the inherent validate method for backward compatibility if needed, 
+// or just redirect it to the trait implementation.
+impl SuratKprRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        Validator::validate(self)
+    }
+}
+
 /// Generator untuk Surat Pernyataan Belum Memiliki Rumah.
 pub struct SuratKprGenerator {
     template: String,
@@ -97,35 +103,6 @@ impl SuratKprGenerator {
         let template_path = get_static_dir().join(TEMPLATE_FILE);
         let template = fs::read_to_string(&template_path).map_err(GeneratorError::TemplateIo)?;
         Ok(Self { template })
-    }
-
-    /// Generate the document from the request data.
-    pub fn generate(&self, request: SuratKprRequest) -> Result<GeneratedDocument, GeneratorError> {
-        let tanggal = request
-            .meta
-            .tanggal
-            .clone()
-            .unwrap_or_else(format_indonesian_date);
-
-        let typst_source = self.render_template(&request, &tanggal);
-
-        let temp_dir = tempdir().map_err(GeneratorError::TempDir)?;
-        let typ_path = temp_dir.path().join(TEMPLATE_FILE);
-        fs::write(&typ_path, &typst_source).map_err(GeneratorError::WriteTypst)?;
-
-        let output_filename = "surat-pernyataan-kpr.pdf";
-        let pdf = compile_typst_to_pdf(&temp_dir, TEMPLATE_FILE, output_filename)?;
-
-        let filename = format!(
-            "surat-kpr-{}.pdf",
-            sanitize_filename(&request.data.nama, "document")
-        );
-
-        Ok(GeneratedDocument {
-            filename,
-            pdf,
-            tanggal,
-        })
     }
 
     fn render_template(&self, request: &SuratKprRequest, tanggal: &str) -> String {
@@ -178,6 +155,33 @@ impl SuratKprGenerator {
             }
         }
         self.template.clone()
+    }
+}
+
+impl Generator<SuratKprRequest> for SuratKprGenerator {
+    /// Generate the document from the request data.
+    fn generate(&self, request: SuratKprRequest) -> Result<GeneratedDocument, GeneratorError> {
+        let tanggal = request
+            .meta
+            .tanggal
+            .clone()
+            .unwrap_or_else(format_indonesian_date);
+
+        let typst_source = self.render_template(&request, &tanggal);
+
+        TypstRenderEngine::render(
+            TEMPLATE_FILE,
+            &typst_source,
+            &request.data.nama,
+            Some(tanggal),
+        )
+    }
+}
+
+// Inherent impl for backward compatibility / ease of use
+impl SuratKprGenerator {
+    pub fn generate(&self, request: SuratKprRequest) -> Result<GeneratedDocument, GeneratorError> {
+        Generator::generate(self, request)
     }
 }
 

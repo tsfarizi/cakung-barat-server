@@ -5,12 +5,10 @@
 
 use serde::Deserialize;
 use std::fs;
-use tempfile::tempdir;
 
-use super::common::{
-    compile_typst_to_pdf, escape_typst_string, format_indonesian_date, get_static_dir,
-    sanitize_filename,
-};
+use super::common::{escape_typst_string, format_indonesian_date, get_static_dir};
+use super::engine::TypstRenderEngine;
+use super::traits::{Generator, Validator};
 use super::{GeneratedDocument, GeneratorError};
 
 const TEMPLATE_FILE: &str = "keterangan_tidak_mampu.typ";
@@ -78,9 +76,9 @@ pub struct SuratTidakMampuRequest {
     pub meta: SuratTidakMampuMeta,
 }
 
-impl SuratTidakMampuRequest {
+impl Validator for SuratTidakMampuRequest {
     /// Validate all input data and return descriptive errors if invalid.
-    pub fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         use super::validation::*;
 
         let mut errors = ValidationErrors::new();
@@ -159,6 +157,13 @@ impl SuratTidakMampuRequest {
     }
 }
 
+// Inherent impl for compatibility
+impl SuratTidakMampuRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        Validator::validate(self)
+    }
+}
+
 /// Generator untuk Surat Pernyataan Tidak Mampu.
 pub struct SuratTidakMampuGenerator {
     template: String,
@@ -170,38 +175,6 @@ impl SuratTidakMampuGenerator {
         let template_path = get_static_dir().join(TEMPLATE_FILE);
         let template = fs::read_to_string(&template_path).map_err(GeneratorError::TemplateIo)?;
         Ok(Self { template })
-    }
-
-    /// Generate the document from the request data.
-    pub fn generate(
-        &self,
-        request: SuratTidakMampuRequest,
-    ) -> Result<GeneratedDocument, GeneratorError> {
-        let tanggal = request
-            .meta
-            .tanggal
-            .clone()
-            .unwrap_or_else(format_indonesian_date);
-
-        let typst_source = self.render_template(&request, &tanggal);
-
-        let temp_dir = tempdir().map_err(GeneratorError::TempDir)?;
-        let typ_path = temp_dir.path().join(TEMPLATE_FILE);
-        fs::write(&typ_path, &typst_source).map_err(GeneratorError::WriteTypst)?;
-
-        let output_filename = "surat-pernyataan-tidak-mampu.pdf";
-        let pdf = compile_typst_to_pdf(&temp_dir, TEMPLATE_FILE, output_filename)?;
-
-        let filename = format!(
-            "sktm-{}.pdf",
-            sanitize_filename(&request.pengisi.nama, "document")
-        );
-
-        Ok(GeneratedDocument {
-            filename,
-            pdf,
-            tanggal,
-        })
     }
 
     fn render_template(&self, request: &SuratTidakMampuRequest, tanggal: &str) -> String {
@@ -280,6 +253,39 @@ impl SuratTidakMampuGenerator {
         }
         // Fallback: return template body without the function definition header
         self.template.clone()
+    }
+}
+
+impl Generator<SuratTidakMampuRequest> for SuratTidakMampuGenerator {
+    /// Generate the document from the request data.
+    fn generate(
+        &self,
+        request: SuratTidakMampuRequest,
+    ) -> Result<GeneratedDocument, GeneratorError> {
+        let tanggal = request
+            .meta
+            .tanggal
+            .clone()
+            .unwrap_or_else(format_indonesian_date);
+
+        let typst_source = self.render_template(&request, &tanggal);
+
+        TypstRenderEngine::render(
+            TEMPLATE_FILE,
+            &typst_source,
+            &request.pengisi.nama,
+            Some(tanggal),
+        )
+    }
+}
+
+// Inherent impl for compatibility
+impl SuratTidakMampuGenerator {
+    pub fn generate(
+        &self,
+        request: SuratTidakMampuRequest,
+    ) -> Result<GeneratedDocument, GeneratorError> {
+        Generator::generate(self, request)
     }
 }
 

@@ -6,14 +6,18 @@
 //! - `SuratNibNpwp` - Surat Pernyataan Akan Mengurus NIB & NPWP
 
 pub mod common;
+pub mod engine;
 mod surat_kpr;
 mod surat_nib_npwp;
 mod surat_tidak_mampu;
+pub mod traits;
 pub mod validation;
 
+pub use engine::TypstRenderEngine;
 pub use surat_kpr::{SuratKprGenerator, SuratKprRequest};
 pub use surat_nib_npwp::{SuratNibNpwpGenerator, SuratNibNpwpRequest};
 pub use surat_tidak_mampu::{SuratTidakMampuGenerator, SuratTidakMampuRequest};
+pub use traits::{Generator, Validator};
 
 use thiserror::Error;
 

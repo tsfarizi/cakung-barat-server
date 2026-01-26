@@ -5,12 +5,10 @@
 
 use serde::Deserialize;
 use std::fs;
-use tempfile::tempdir;
 
-use super::common::{
-    compile_typst_to_pdf, escape_typst_string, format_indonesian_date, get_static_dir,
-    sanitize_filename,
-};
+use super::common::{escape_typst_string, format_indonesian_date, get_static_dir};
+use super::engine::TypstRenderEngine;
+use super::traits::{Generator, Validator};
 use super::{GeneratedDocument, GeneratorError};
 
 const TEMPLATE_FILE: &str = "surat_pernyataan_akan_mengurus_nib_npwp.typ";
@@ -42,9 +40,9 @@ pub struct SuratNibNpwpRequest {
     pub meta: SuratNibNpwpMeta,
 }
 
-impl SuratNibNpwpRequest {
+impl Validator for SuratNibNpwpRequest {
     /// Validate all input data and return descriptive errors if invalid.
-    pub fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         use super::validation::*;
 
         let mut errors = ValidationErrors::new();
@@ -87,6 +85,13 @@ impl SuratNibNpwpRequest {
     }
 }
 
+// Inherent impl for compatibility
+impl SuratNibNpwpRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        Validator::validate(self)
+    }
+}
+
 /// Generator untuk Surat Pernyataan Akan Mengurus NIB & NPWP.
 pub struct SuratNibNpwpGenerator {
     template: String,
@@ -98,38 +103,6 @@ impl SuratNibNpwpGenerator {
         let template_path = get_static_dir().join(TEMPLATE_FILE);
         let template = fs::read_to_string(&template_path).map_err(GeneratorError::TemplateIo)?;
         Ok(Self { template })
-    }
-
-    /// Generate the document from the request data.
-    pub fn generate(
-        &self,
-        request: SuratNibNpwpRequest,
-    ) -> Result<GeneratedDocument, GeneratorError> {
-        let tanggal = request
-            .meta
-            .tanggal
-            .clone()
-            .unwrap_or_else(format_indonesian_date);
-
-        let typst_source = self.render_template(&request, &tanggal);
-
-        let temp_dir = tempdir().map_err(GeneratorError::TempDir)?;
-        let typ_path = temp_dir.path().join(TEMPLATE_FILE);
-        fs::write(&typ_path, &typst_source).map_err(GeneratorError::WriteTypst)?;
-
-        let output_filename = "surat-pernyataan-nib-npwp.pdf";
-        let pdf = compile_typst_to_pdf(&temp_dir, TEMPLATE_FILE, output_filename)?;
-
-        let filename = format!(
-            "surat-nib-npwp-{}.pdf",
-            sanitize_filename(&request.data.nama, "document")
-        );
-
-        Ok(GeneratedDocument {
-            filename,
-            pdf,
-            tanggal,
-        })
     }
 
     fn render_template(&self, request: &SuratNibNpwpRequest, tanggal: &str) -> String {
@@ -174,6 +147,39 @@ impl SuratNibNpwpGenerator {
             }
         }
         self.template.clone()
+    }
+}
+
+impl Generator<SuratNibNpwpRequest> for SuratNibNpwpGenerator {
+    /// Generate the document from the request data.
+    fn generate(
+        &self,
+        request: SuratNibNpwpRequest,
+    ) -> Result<GeneratedDocument, GeneratorError> {
+        let tanggal = request
+            .meta
+            .tanggal
+            .clone()
+            .unwrap_or_else(format_indonesian_date);
+
+        let typst_source = self.render_template(&request, &tanggal);
+
+        TypstRenderEngine::render(
+            TEMPLATE_FILE,
+            &typst_source,
+            &request.data.nama,
+            Some(tanggal),
+        )
+    }
+}
+
+// Inherent impl for compatibility
+impl SuratNibNpwpGenerator {
+    pub fn generate(
+        &self,
+        request: SuratNibNpwpRequest,
+    ) -> Result<GeneratedDocument, GeneratorError> {
+        Generator::generate(self, request)
     }
 }
 

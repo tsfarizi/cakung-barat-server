@@ -3,12 +3,7 @@
 //! Shared helpers for template rendering, date formatting, and PDF compilation.
 
 use chrono::{Datelike, Local};
-use std::fs;
 use std::path::Path;
-use std::process::Command;
-use tempfile::TempDir;
-
-use super::GeneratorError;
 
 /// Format current date in Indonesian format (e.g., "30 Desember 2025").
 pub fn format_indonesian_date() -> String {
@@ -65,39 +60,6 @@ pub fn sanitize_filename(name: &str, fallback: &str) -> String {
     }
 
     result.trim_matches('-').to_string()
-}
-
-/// Compile a Typst source file to PDF.
-///
-/// # Arguments
-/// * `temp_dir` - Temporary directory containing the .typ file
-/// * `typ_filename` - Name of the .typ file to compile
-/// * `output_filename` - Name of the output PDF file
-///
-/// # Returns
-/// The PDF bytes if successful.
-pub fn compile_typst_to_pdf(
-    temp_dir: &TempDir,
-    typ_filename: &str,
-    output_filename: &str,
-) -> Result<Vec<u8>, GeneratorError> {
-    let typ_path = temp_dir.path().join(typ_filename);
-    let output_path = temp_dir.path().join(output_filename);
-
-    let status = Command::new("typst")
-        .arg("compile")
-        .arg(&typ_path)
-        .arg(&output_path)
-        .current_dir(temp_dir.path())
-        .status()
-        .map_err(GeneratorError::TypstIo)?;
-
-    if !status.success() {
-        let code = status.code().unwrap_or(-1);
-        return Err(GeneratorError::TypstExit(code));
-    }
-
-    fs::read(&output_path).map_err(GeneratorError::ReadPdf)
 }
 
 /// Get the static assets directory path.
