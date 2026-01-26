@@ -22,8 +22,8 @@ pub struct PengisiData {
     pub nik: String,
     /// Tempat dan tanggal lahir
     pub ttl: String,
-    /// Jenis kelamin
-    pub jk: String,
+    /// Jenis kelamin (true: Laki-laki, false: Perempuan)
+    pub jk: bool,
     pub agama: String,
     pub pekerjaan: String,
     pub alamat: String,
@@ -36,7 +36,7 @@ pub struct SubjekData {
     pub nama: String,
     pub nik: String,
     pub ttl: String,
-    pub jk: String,
+    pub jk: bool,
     pub agama: String,
     pub pekerjaan: String,
     pub alamat: String,
@@ -94,7 +94,7 @@ impl SuratTidakMampuRequest {
         );
         validate_nik(&self.pengisi.nik, "pengisi.nik", &mut errors);
         validate_ttl(&self.pengisi.ttl, "pengisi.ttl", &mut errors);
-        validate_gender(&self.pengisi.jk, "pengisi.jk", &mut errors);
+        // validate_gender(&self.pengisi.jk, "pengisi.jk", &mut errors);
         validate_required(
             &self.pengisi.agama,
             "pengisi.agama",
@@ -120,7 +120,7 @@ impl SuratTidakMampuRequest {
             validate_required(&self.subjek.nama, "subjek.nama", "Nama Subjek", &mut errors);
             validate_nik_optional(&self.subjek.nik, "subjek.nik", &mut errors);
             validate_ttl(&self.subjek.ttl, "subjek.ttl", &mut errors);
-            validate_gender(&self.subjek.jk, "subjek.jk", &mut errors);
+            // validate_gender(&self.subjek.jk, "subjek.jk", &mut errors);
             validate_required(
                 &self.subjek.agama,
                 "subjek.agama",
@@ -210,6 +210,9 @@ impl SuratTidakMampuGenerator {
         let subjek = &request.subjek;
         let meta = &request.meta;
 
+        let pengisi_jk = if pengisi.jk { "Laki-laki" } else { "Perempuan" };
+        let subjek_jk = if subjek.jk { "Laki-laki" } else { "Perempuan" };
+
         format!(
             r#"#let surat_pernyataan(
   pengisi: (
@@ -245,7 +248,7 @@ impl SuratTidakMampuGenerator {
             escape_typst_string(&pengisi.nama),
             escape_typst_string(&pengisi.nik),
             escape_typst_string(&pengisi.ttl),
-            escape_typst_string(&pengisi.jk),
+            escape_typst_string(pengisi_jk),
             escape_typst_string(&pengisi.agama),
             escape_typst_string(&pengisi.pekerjaan),
             escape_typst_string(&pengisi.alamat),
@@ -253,7 +256,7 @@ impl SuratTidakMampuGenerator {
             escape_typst_string(&subjek.nama),
             escape_typst_string(&subjek.nik),
             escape_typst_string(&subjek.ttl),
-            escape_typst_string(&subjek.jk),
+            escape_typst_string(subjek_jk),
             escape_typst_string(&subjek.agama),
             escape_typst_string(&subjek.pekerjaan),
             escape_typst_string(&subjek.alamat),
@@ -298,7 +301,7 @@ mod tests {
                 "nama": "John Doe",
                 "nik": "1234567890123456",
                 "ttl": "Jakarta, 1 Januari 1990",
-                "jk": "Laki-laki",
+                "jk": true,
                 "agama": "Islam",
                 "pekerjaan": "Karyawan Swasta",
                 "alamat": "Jl. Test No. 1",

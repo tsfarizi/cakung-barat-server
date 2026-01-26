@@ -50,12 +50,6 @@ impl ValidationError {
             .with_suggestion("Gunakan format nomor telepon Indonesia, contoh: 08123456789")
     }
 
-    /// Create error for invalid gender value
-    pub fn invalid_gender(field: &str, value: &str) -> Self {
-        Self::new(field, format!("Jenis kelamin '{}' tidak valid", value))
-            .with_suggestion("Gunakan 'Laki-laki' atau 'Perempuan'")
-    }
-
     /// Create error for invalid date format
     pub fn invalid_date_format(field: &str, value: &str) -> Self {
         Self::new(field, format!("Format tanggal '{}' tidak valid", value)).with_suggestion(
@@ -183,20 +177,6 @@ pub fn validate_phone(value: &str, field: &str, errors: &mut ValidationErrors) {
     }
 }
 
-/// Validate gender value
-pub fn validate_gender(value: &str, field: &str, errors: &mut ValidationErrors) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        errors.add(ValidationError::empty_field(field, "Jenis Kelamin"));
-        return;
-    }
-
-    let valid = ["laki-laki", "perempuan", "pria", "wanita", "l", "p"];
-    if !valid.iter().any(|v| v.eq_ignore_ascii_case(trimmed)) {
-        errors.add(ValidationError::invalid_gender(field, trimmed));
-    }
-}
-
 /// Validate tempat tanggal lahir format
 pub fn validate_ttl(value: &str, field: &str, errors: &mut ValidationErrors) {
     let trimmed = value.trim();
@@ -247,23 +227,6 @@ mod tests {
         validate_nik("123456", "nik", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors.to_mcp_message().contains("16 digit"));
-    }
-
-    #[test]
-    fn test_validate_gender_valid() {
-        let mut errors = ValidationErrors::new();
-        validate_gender("Laki-laki", "jk", &mut errors);
-        assert!(errors.is_empty());
-
-        validate_gender("perempuan", "jk", &mut errors);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_validate_gender_invalid() {
-        let mut errors = ValidationErrors::new();
-        validate_gender("unknown", "jk", &mut errors);
-        assert_eq!(errors.len(), 1);
     }
 
     #[test]

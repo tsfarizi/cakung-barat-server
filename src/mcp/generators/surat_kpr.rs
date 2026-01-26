@@ -22,8 +22,8 @@ pub struct KprData {
     pub nik: String,
     /// Tempat dan tanggal lahir
     pub ttl: String,
-    /// Jenis kelamin
-    pub jk: String,
+    /// Jenis kelamin (true: Laki-laki, false: Perempuan)
+    pub jk: bool,
     pub agama: String,
     pub pekerjaan: String,
     pub alamat: String,
@@ -57,7 +57,7 @@ impl SuratKprRequest {
         validate_required(&self.data.nama, "data.nama", "Nama Pemohon", &mut errors);
         validate_nik(&self.data.nik, "data.nik", &mut errors);
         validate_ttl(&self.data.ttl, "data.ttl", &mut errors);
-        validate_gender(&self.data.jk, "data.jk", &mut errors);
+        // validate_gender(&self.data.jk, "data.jk", &mut errors);
         validate_required(&self.data.agama, "data.agama", "Agama", &mut errors);
         validate_required(
             &self.data.pekerjaan,
@@ -131,6 +131,7 @@ impl SuratKprGenerator {
     fn render_template(&self, request: &SuratKprRequest, tanggal: &str) -> String {
         let data = &request.data;
         let meta = &request.meta;
+        let jk_str = if data.jk { "Laki-laki" } else { "Perempuan" };
 
         format!(
             r#"#let surat_pernyataan_kpr(
@@ -157,7 +158,7 @@ impl SuratKprGenerator {
             escape_typst_string(&data.nama),
             escape_typst_string(&data.nik),
             escape_typst_string(&data.ttl),
-            escape_typst_string(&data.jk),
+            escape_typst_string(jk_str),
             escape_typst_string(&data.agama),
             escape_typst_string(&data.pekerjaan),
             escape_typst_string(&data.alamat),
@@ -197,7 +198,7 @@ mod tests {
                 "nama": "Jane Doe",
                 "nik": "1234567890123456",
                 "ttl": "Jakarta, 15 Maret 1985",
-                "jk": "Perempuan",
+                "jk": false,
                 "agama": "Kristen",
                 "pekerjaan": "PNS",
                 "alamat": "Jl. Melati No. 5",

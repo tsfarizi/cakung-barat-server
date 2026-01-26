@@ -479,7 +479,7 @@ mod tests {
                 "nama": "",
                 "nik": "",
                 "ttl": "",
-                "jk": "",
+                "jk": true,
                 "agama": "",
                 "pekerjaan": "",
                 "alamat": "",
@@ -508,7 +508,7 @@ mod tests {
                 "nama": "Test User",
                 "nik": "12345",  // Invalid: should be 16 digits
                 "ttl": "Jakarta, 1 Januari 1990",
-                "jk": "Laki-laki",
+                "jk": true,
                 "agama": "Islam",
                 "pekerjaan": "Karyawan",
                 "alamat": "Jl. Test No. 1",
@@ -534,39 +534,6 @@ mod tests {
     }
 
     #[test]
-    fn test_call_sktm_with_invalid_gender_returns_descriptive_error() {
-        let registry = ToolRegistry::new().unwrap();
-        let args = json!({
-            "pengisi": {
-                "nama": "Test User",
-                "nik": "3171234567890123",
-                "ttl": "Jakarta, 1 Januari 1990",
-                "jk": "Unknown",  // Invalid gender
-                "agama": "Islam",
-                "pekerjaan": "Karyawan",
-                "alamat": "Jl. Test No. 1",
-                "telp": "08123456789"
-            },
-            "meta": {
-                "kelurahan": "Cakung Barat"
-            }
-        });
-
-        let result = registry.call_tool("generate_surat_tidak_mampu", Some(args));
-
-        assert!(result.is_error);
-        let error_text = result.content[0].text.as_ref().unwrap();
-        assert!(
-            error_text.contains("Jenis kelamin"),
-            "Should mention gender issue"
-        );
-        assert!(
-            error_text.contains("Laki-laki") || error_text.contains("Perempuan"),
-            "Should suggest valid options"
-        );
-    }
-
-    #[test]
     fn test_call_kpr_with_missing_bank_returns_error() {
         let registry = ToolRegistry::new().unwrap();
         let args = json!({
@@ -574,7 +541,7 @@ mod tests {
                 "nama": "Test User",
                 "nik": "3171234567890123",
                 "ttl": "Jakarta, 1 Januari 1990",
-                "jk": "Laki-laki",
+                "jk": true,
                 "agama": "Islam",
                 "pekerjaan": "Karyawan",
                 "alamat": "Jl. Test No. 1",
@@ -635,7 +602,7 @@ mod tests {
                 "nama": "",           // Error 1: empty
                 "nik": "invalid",     // Error 2: not 16 digits
                 "ttl": "no comma",   // Error 3: invalid format
-                "jk": "X",            // Error 4: invalid gender
+                "jk": true,           // Valid
                 "agama": "",          // Error 5: empty
                 "pekerjaan": "",      // Error 6: empty
                 "alamat": "",         // Error 7: empty

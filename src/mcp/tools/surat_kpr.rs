@@ -36,7 +36,7 @@ fn input_schema() -> Value {
                     "nama": { "type": "string", "description": "Nama lengkap pemohon" },
                     "nik": { "type": "string", "description": "NIK (16 digit)" },
                     "ttl": { "type": "string", "description": "Tempat, Tanggal Lahir" },
-                    "jk": { "type": "string", "description": "Jenis Kelamin (Laki-laki/Perempuan)" },
+                    "jk": { "type": "boolean", "description": "Jenis Kelamin (true = Laki-laki, false = Perempuan). Jika input user tidak jelas, tanyakan kembali." },
                     "agama": { "type": "string", "description": "Agama" },
                     "pekerjaan": { "type": "string", "description": "Pekerjaan" },
                     "alamat": { "type": "string", "description": "Alamat lengkap" },
