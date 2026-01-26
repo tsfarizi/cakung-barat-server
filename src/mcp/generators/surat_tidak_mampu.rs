@@ -288,39 +288,3 @@ impl SuratTidakMampuGenerator {
         Generator::generate(self, request)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_generator() {
-        // This test requires the template file to exist
-        let result = SuratTidakMampuGenerator::new();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_request_deserialization() {
-        let json = r#"{
-            "pengisi": {
-                "nama": "John Doe",
-                "nik": "1234567890123456",
-                "ttl": "Jakarta, 1 Januari 1990",
-                "jk": true,
-                "agama": "Islam",
-                "pekerjaan": "Karyawan Swasta",
-                "alamat": "Jl. Test No. 1",
-                "telp": "08123456789"
-            },
-            "meta": {
-                "opsi_sendiri": true,
-                "kelurahan": "Cakung Barat"
-            }
-        }"#;
-
-        let request: SuratTidakMampuRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.pengisi.nama, "John Doe");
-        assert!(request.meta.opsi_sendiri);
-    }
-}

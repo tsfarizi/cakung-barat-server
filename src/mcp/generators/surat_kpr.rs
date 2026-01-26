@@ -184,38 +184,3 @@ impl SuratKprGenerator {
         Generator::generate(self, request)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_generator() {
-        let result = SuratKprGenerator::new();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_request_deserialization() {
-        let json = r#"{
-            "data": {
-                "nama": "Jane Doe",
-                "nik": "1234567890123456",
-                "ttl": "Jakarta, 15 Maret 1985",
-                "jk": false,
-                "agama": "Kristen",
-                "pekerjaan": "PNS",
-                "alamat": "Jl. Melati No. 5",
-                "telp": "08198765432"
-            },
-            "meta": {
-                "kelurahan": "Cakung Barat",
-                "bank_tujuan": "Bank BTN"
-            }
-        }"#;
-
-        let request: SuratKprRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.data.nama, "Jane Doe");
-        assert_eq!(request.meta.bank_tujuan, "Bank BTN");
-    }
-}

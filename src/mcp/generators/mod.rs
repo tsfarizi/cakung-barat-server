@@ -7,9 +7,9 @@
 
 pub mod common;
 pub mod engine;
-mod surat_kpr;
-mod surat_nib_npwp;
-mod surat_tidak_mampu;
+pub mod surat_kpr;
+pub mod surat_nib_npwp;
+pub mod surat_tidak_mampu;
 pub mod traits;
 pub mod validation;
 

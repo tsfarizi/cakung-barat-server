@@ -182,33 +182,3 @@ impl SuratNibNpwpGenerator {
         Generator::generate(self, request)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_generator() {
-        let result = SuratNibNpwpGenerator::new();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_request_deserialization() {
-        let json = r#"{
-            "data": {
-                "nama": "Ahmad Wirawan",
-                "nik": "3171234567890123",
-                "jabatan": "Pemilik",
-                "bidang_usaha": "Perdagangan",
-                "kegiatan_usaha": "Toko Kelontong",
-                "jenis_usaha": "Usaha Mikro",
-                "alamat_usaha": "Jl. Pasar No. 10"
-            }
-        }"#;
-
-        let request: SuratNibNpwpRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.data.nama, "Ahmad Wirawan");
-        assert_eq!(request.data.jenis_usaha, "Usaha Mikro");
-    }
-}
