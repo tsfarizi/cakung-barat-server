@@ -34,11 +34,51 @@ mod database_integration_tests {
                     .unwrap();
 
                 // Read schema from the source of truth file
-                let schema_sql = std::fs::read_to_string("../supabase_schema.sql")
+                let schema_sql = std::fs::read_to_string("supabase_schema.sql")
                     .expect("Failed to read supabase_schema.sql file");
 
                 // Run the schema to ensure test tables exist
-                sqlx::query(&schema_sql).execute(&pool).await.unwrap();
+                // Simple parser to split statements by ';' while respecting '$$' blocks for functions
+                let mut current_stmt = String::new();
+                let mut inside_dollar_quote = false;
+
+                for c in schema_sql.chars() {
+                    current_stmt.push(c);
+                    if current_stmt.ends_with("$$") {
+                        inside_dollar_quote = !inside_dollar_quote;
+                    }
+                    if c == ';' && !inside_dollar_quote {
+                        let stmt = current_stmt.trim();
+                        if !stmt.is_empty() {
+                            match sqlx::query(stmt).execute(&pool).await {
+                                Ok(_) => {},
+                                Err(e) => {
+                                    let err_msg = e.to_string();
+                                    // Ignore errors that happen due to parallel execution or existing objects
+                                    if !err_msg.contains("already exists") && 
+                                       !err_msg.contains("tuple concurrently updated") {
+                                        panic!("Failed to execute statement: {}\nError: {}", stmt, e);
+                                    }
+                                }
+                            }
+                        }
+                        current_stmt.clear();
+                    }
+                }
+                
+                let stmt = current_stmt.trim();
+                if !stmt.is_empty() {
+                    match sqlx::query(stmt).execute(&pool).await {
+                        Ok(_) => {},
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            if !err_msg.contains("already exists") && 
+                               !err_msg.contains("tuple concurrently updated") {
+                                panic!("Failed to execute statement: {}\nError: {}", stmt, e);
+                            }
+                        }
+                    }
+                }
 
                 pool
             }
@@ -53,11 +93,12 @@ mod database_integration_tests {
     }
 
     // Helper to clean up test data
-    async fn cleanup_test_data(pool: &PgPool) {
-        // Truncate all tables that might have been created during tests
-        let _ = sqlx::query!("TRUNCATE TABLE posts, assets, folders, asset_folders, posting_assets RESTART IDENTITY CASCADE")
-            .execute(pool)
-            .await;
+    async fn cleanup_test_data(_pool: &PgPool) {
+        // Truncating tables causes issues with parallel tests and shared database.
+        // We rely on unique IDs/names for isolation and manual cleanup where possible.
+        // let _ = sqlx::query!("TRUNCATE TABLE posts, assets, folders, asset_folders, posting_assets RESTART IDENTITY CASCADE")
+        //     .execute(pool)
+        //     .await;
     }
 
     // Mock implementation of ObjectStorage for testing
@@ -267,17 +308,17 @@ mod database_integration_tests {
         app_state.insert_asset(&asset1).await.unwrap();
         app_state.insert_asset(&asset2).await.unwrap();
 
-        let folder_name = "test_folder_integration";
+        let folder_name = format!("test_folder_integration_{}", Uuid::new_v4());
         let asset_ids = vec![asset1.id, asset2.id];
 
         // Test folder creation and asset association
         let insert_result = app_state
-            .insert_folder_contents(folder_name, &asset_ids)
+            .insert_folder_contents(&folder_name, &asset_ids)
             .await;
         assert!(insert_result.is_ok());
 
         // Test reading folder contents
-        let folder_contents = app_state.get_folder_contents(folder_name).await.unwrap();
+        let folder_contents = app_state.get_folder_contents(&folder_name).await.unwrap();
         assert!(folder_contents.is_some());
         assert_eq!(folder_contents.unwrap().len(), 2);
 
@@ -393,7 +434,7 @@ mod database_integration_tests {
             category: "Batch Category 1".to_string(),
             date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
             excerpt: "Batch test excerpt 1".to_string(),
-            folder_id: Some("batch_folder_1".to_string()),
+            folder_id: Some(format!("batch_folder_1_{}", Uuid::new_v4())),
             created_at: Some(chrono::Utc::now()),
             updated_at: Some(chrono::Utc::now()),
         };
@@ -404,7 +445,7 @@ mod database_integration_tests {
             category: "Batch Category 2".to_string(),
             date: NaiveDate::from_ymd_opt(2025, 1, 2).unwrap(),
             excerpt: "Batch test excerpt 2".to_string(),
-            folder_id: Some("batch_folder_2".to_string()),
+            folder_id: Some(format!("batch_folder_2_{}", Uuid::new_v4())),
             created_at: Some(chrono::Utc::now()),
             updated_at: Some(chrono::Utc::now()),
         };
